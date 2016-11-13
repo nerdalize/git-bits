@@ -10,7 +10,7 @@ import (
 )
 
 var (
-	name    = "nerdalize"
+	name    = "git-bits"
 	version = "0.0.0"
 )
 
