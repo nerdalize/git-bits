@@ -1,0 +1,8 @@
+package: github.com/nerdalize/git-bits
+import:
+- package: github.com/mitchellh/cli                 #cross-platform command lines
+  version: fa17b36f6c61f1ddbbb08c9f6fde94b3c065a09d
+- package: github.com/restic/chunker                #content-based chunking
+  version: bb2ecf9a98e35a0b336ffc23fc515fb6e7961577
+- package: github.com/rlmcpherson/s3gof3r           #fast s3 streaming access
+  version: bc1aca74326ad100d0aa82bfa9ce6e9278620750
