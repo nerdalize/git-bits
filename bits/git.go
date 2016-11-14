@@ -12,6 +12,14 @@ import (
 	"strings"
 )
 
+var (
+	//DefaultIndexBranch is the name of the branch the GitIndex uses to store keys
+	DefaultIndexBranch = "refs/heads/bits_chunk_idx"
+
+	//DefaultCommitMessage is the commit message written for index updates
+	DefaultCommitMessage = "chunk index updated"
+)
+
 //GitRepository provides an abstraction on top of a Git repository in a
 //certain directory that is queried by git commands
 type GitRepository struct {
@@ -94,21 +102,16 @@ type GitIndex struct {
 	//full name (refs/heads/...) of the local branch the index saves and loads from
 	branch string
 
+	//git remote name to which an index is pushed and pulled
+	remote string
+
 	//unbound set of chunk keys
 	set map[K]interface{}
 }
 
-var (
-	//DefaultIndexBranch is the name of the branch the GitIndex uses to store keys
-	DefaultIndexBranch = "refs/heads/bits_chunk_idx"
-
-	//DefaultCommitMessage is the commit message written for index updates
-	DefaultCommitMessage = "chunk index updated"
-)
-
 //NewGitIndex will create a SharedIndex from a branch in the provided git
 //repository that can be pushed and pulled
-func NewGitIndex(repo *GitRepository, branch string) (idx *GitIndex, err error) {
+func NewGitIndex(repo *GitRepository, branch, remote string) (idx *GitIndex, err error) {
 	if branch == "" {
 		branch = DefaultIndexBranch
 	}
@@ -121,6 +124,7 @@ func NewGitIndex(repo *GitRepository, branch string) (idx *GitIndex, err error) 
 	idx = &GitIndex{
 		repo:   repo,
 		branch: branch,
+		remote: remote,
 	}
 
 	return idx, idx.Clear()
@@ -278,26 +282,112 @@ func (idx *GitIndex) Load(ctx context.Context) (err error) {
 	return nil
 }
 
-//Pull will fetch and merge a remote index branch into the local branch
-//the newly merged index needs to be loaded manually afterwards
+//Pull will fetch and merge a remote index with the local branch,
+//it does not immediately update the in-memory representation
 func (idx *GitIndex) Pull(ctx context.Context) (err error) {
-	// fetch <remote> <branch>
-	// rev-parse FETCH_HEAD
-	// show-rev
-	// read-commit <left>
-	// read-commit <right>
-	// [MERGE]
-	// write-commit
-	// update-ref
+	if idx.remote == "" {
+		return fmt.Errorf("index wasnt configured with a remote to push and pull from: %v", err)
+	}
 
-	return fmt.Errorf("not yet implemented")
+	err = idx.repo.Git(ctx, nil, nil, "fetch", idx.remote, fmt.Sprintf("%s:%s", idx.branch, idx.branch))
+	if err != nil {
+		if !strings.Contains(err.Error(), "exit status 1") {
+			return fmt.Errorf("unexpected fetch error: %v", err)
+		}
+
+		//assume exist status 1 means we couldnt fast forward, FETCH_HEAD
+		//should contain a ref to the commit that was fetched, we continue
+		//with the creation of a custom commit that merges the current branch
+		//with the newly fetched head
+		//
+		//@TODO the current merge/save/load setup is dangerous, it seems pretty
+		//likely some data will get lost in race conditions between disk (Git db)
+		//and im-memory representation. this needs to be tested more
+
+		out := bytes.NewBuffer(nil)
+		err = idx.repo.Git(ctx, nil, out, "rev-parse", "FETCH_HEAD")
+		if err != nil {
+			return fmt.Errorf("failed to parse fetched head: %v", err)
+		}
+
+		newHeadSha1 := strings.TrimSpace(out.String())
+		if newHeadSha1 == "" {
+			return fmt.Errorf("couldnt parse fetched head to commit sha1")
+		}
+
+		oldHeadSha1, err := idx.showBranchCommit(ctx)
+		if err != nil {
+			return fmt.Errorf("coudnt get idex branch commit: %v", err)
+		}
+
+		newHeadBuf := bytes.NewBuffer(nil)
+		err = idx.readCommit(ctx, newHeadSha1, newHeadBuf)
+		if err != nil {
+			return fmt.Errorf("failed to read new head commit: %v", err)
+		}
+
+		oldHeadBuf := bytes.NewBuffer(nil)
+		err = idx.readCommit(ctx, oldHeadSha1, oldHeadBuf)
+		if err != nil {
+			return fmt.Errorf("failed to read old head commit: %v", err)
+		}
+
+		newSet := map[K]interface{}{}
+		newSetDec := gob.NewDecoder(newHeadBuf)
+		err = newSetDec.Decode(&newSet)
+		if err != nil {
+			return fmt.Errorf("failed to decode new head: %v", err)
+		}
+
+		oldSet := map[K]interface{}{}
+		oldSetDec := gob.NewDecoder(oldHeadBuf)
+		err = oldSetDec.Decode(&oldSet)
+		if err != nil {
+			return fmt.Errorf("failed to decode old head: %v", err)
+		}
+
+		tmpIndx, err := NewGitIndex(idx.repo, idx.branch, idx.remote)
+		if err != nil {
+			return fmt.Errorf("failed to setup tmp git index: %v", err)
+		}
+
+		for k := range oldSet {
+			err = tmpIndx.Add(k)
+			if err != nil {
+				return fmt.Errorf("failed to merge key '%x' (old set): %v", k, err)
+			}
+		}
+
+		for k := range newSet {
+			err = tmpIndx.Add(k)
+			if err != nil {
+				return fmt.Errorf("failed to merge key '%x' (new set): %v", k, err)
+			}
+		}
+
+		c3, err := tmpIndx.writeCommit(ctx, oldHeadSha1, newHeadSha1)
+		if err != nil {
+			return fmt.Errorf("failed to write merged commit: %v", err)
+		}
+
+		err = idx.updateBranchCommit(ctx, c3)
+		if err != nil {
+			return fmt.Errorf("updated index branch commit: %v", err)
+		}
+	}
+
+	return nil
 }
 
 //Push will send the contents of the local index branch to a Git remote
 //such that other users can pull and merge to gain knowledge of newly
 //uploaded chunks
 func (idx *GitIndex) Push(ctx context.Context) (err error) {
-	return fmt.Errorf("not yet implemented")
+	if idx.remote == "" {
+		return fmt.Errorf("index wasnt configured with a remote to push and pull from: %v", err)
+	}
+
+	return idx.repo.Git(ctx, nil, nil, "push", idx.remote, fmt.Sprintf("%s:%s", idx.branch, idx.branch))
 }
 
 //Clear will whipe the in-memory representation of the index
