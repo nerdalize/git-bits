@@ -33,6 +33,7 @@ func NewDB(path string) (db *DB, err error) {
 //Cleaned returns hashes of all blobs that were cleaned
 func (db *DB) Cleaned() (sha1s [][]byte, err error) {
 	err = db.db.View(func(tx *bolt.Tx) error {
+		fmt.Fprintf(os.Stderr, "aaaa")
 		return tx.Bucket(LogBucketName).ForEach(func(k, v []byte) error {
 			fmt.Fprintf(os.Stderr, "key=%x, value=%x\n", k, v)
 			return nil
@@ -49,6 +50,7 @@ func (db *DB) Cleaned() (sha1s [][]byte, err error) {
 //LogClean will record a cleaned file using the sha1
 func (db *DB) LogClean(sha1 []byte) (err error) {
 	err = db.db.Update(func(tx *bolt.Tx) error {
+		fmt.Fprintf(os.Stderr, "sha: %x\n", string(sha1))
 		return tx.Bucket(LogBucketName).Put(sha1, []byte{})
 	})
 

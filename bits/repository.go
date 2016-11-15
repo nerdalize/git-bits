@@ -103,6 +103,113 @@ func (repo *Repository) Git(ctx context.Context, in io.Reader, out io.Writer, ar
 	return nil
 }
 
+
+//Scan will traverse git objects between commit 'left' and 'right', it will
+//look for blobs larger then 32 bytes that are also in the clean log. These
+//blobs should contain keys that are written to writer 'w'
+func (repo *Repository) Scan(left, right string, w io.Writer) (err error) {
+
+	// rev-list --objects <right> ^<left> | f1 | cat-file --batch-check | f2
+	ctx := context.Background()
+	r1, w1 := io.Pipe()
+	r2, w2 := io.Pipe()
+	r3, w3 := io.Pipe()
+
+	go func() {
+		defer w1.Close()
+		err = repo.Git(ctx, nil, w1, "rev-list", "--objects", right, "^"+left)
+		if err != nil {
+			//@TODO report error
+		}
+	}()
+
+	go func() {
+		defer w2.Close()
+		s := bufio.NewScanner(r1)
+		for s.Scan() {
+			fields := bytes.Fields(s.Bytes())
+			if len(fields) < 1 {
+				continue
+			}
+
+			fmt.Fprintf(w2, "%s\n", fields[0])
+		}
+
+		if err = s.Err(); err != nil {
+			//@TODO report
+		}
+	}()
+
+	go func() {
+		defer w3.Close()
+		err = repo.Git(ctx, r2, w3, "cat-file", "--batch-check")
+		if err != nil {
+			//@TODO report error
+		}
+	}()
+
+	cleaned, err := repo.db.Cleaned()
+	if err != nil {
+		return fmt.Errorf("failed to list blob cleans: %v", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "cleaned: %v\n", cleaned)
+
+	s := bufio.NewScanner(r3)
+	for s.Scan() {
+		fields := bytes.Fields(s.Bytes())
+		if len(fields) < 2 || !bytes.Equal(fields[1], []byte("blob")) {
+			continue
+		}
+
+		fmt.Fprintf(os.Stderr, "%s\n", s.Text())
+		_ = fields
+	}
+
+	if err = s.Err(); err != nil {
+		//@TODO report
+	}
+
+
+
+
+	// objs := bytes.NewBuffer(nil)
+	// err = r.Git(ctx, nil, objs, "rev-list", "--objects", "--all", localSha1, "^"+remoteSha1)
+	// if err != nil {
+	// 	return fmt.Errorf("failed to list pushed objects: %v", err)
+	// }
+	//
+	// objSha1s := bytes.NewBuffer(nil)
+	// scanner := bufio.NewScanner(objs)
+	// for scanner.Scan() {
+	// 	fields := bytes.Fields(scanner.Bytes())
+	// 	if len(fields) < 1 {
+	// 		return fmt.Errorf("unexpected rev-list line '%s': expected at least 1 fields", string(scanner.Text()))
+	// 	}
+	//
+	// 	_, err = objSha1s.Write(fields[0])
+	// 	_, err = objSha1s.WriteString("\n")
+	// 	if err != nil {
+	// 		return fmt.Errorf("failed to write object sha to buffer: %v", err)
+	// 	}
+	// }
+	//
+	// if err = scanner.Err(); err != nil {
+	// 	return fmt.Errorf("failed to scan rev-list output: %v", err)
+	// }
+	//
+	// checks := bytes.NewBuffer(nil)
+	// err = r.Git(ctx, objSha1s, checks, "cat-file", "--batch-check")
+	// if err != nil {
+	// 	return fmt.Errorf("failed to list pushed objects: %v", err)
+	// }
+
+
+
+
+	return nil
+}
+
 //Clean turns a plain bytes from 'r' into encrypted, deduplicated and persisted chunks
 //while outputting keys for those chunks on writer 'w'. Chunks are written to a local chunk
 //space, pushing these to a remote store happens at a later time (pre-push hook) but a log
@@ -237,7 +344,6 @@ func (repo *Repository) Smudge(r io.Reader, w io.Writer) (err error) {
 				return fmt.Errorf("failed to copy chunk '%x' content after %d bytes: %v", k, n, err)
 			}
 
-			fmt.Fprintf(os.Stderr, "key %x", k)
 			return nil
 		}()
 

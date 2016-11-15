@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	mrand "math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -113,7 +112,7 @@ func TestNewRepository(t *testing.T) {
 	if err == nil {
 		t.Errorf("creating repo in non-existing directory should fail")
 	} else {
-		if !strings.Contains(err.Error(), "no such file") {
+		if !strings.Contains(err.Error(), "workspace") {
 			t.Errorf("creating repo should fail with non existing dir error, got: %v", err)
 		}
 	}
@@ -163,12 +162,13 @@ func TestCleanSmudgeFilter(t *testing.T) {
 		t.Error(err)
 	}
 
-	c0 := bytes.NewBuffer(nil)
-	err = repo1.Git(ctx, nil, c0, "rev-parse", "HEAD")
+	c0buf := bytes.NewBuffer(nil)
+	err = repo1.Git(ctx, nil, c0buf, "rev-parse", "HEAD")
 	if err != nil {
 		t.Error(err)
 	}
 
+	c0 :=  strings.TrimSpace(c0buf.String())
 	originalContent := bytes.NewBuffer(nil)
 
 	f2, err := os.OpenFile(fpath, os.O_RDWR, 0666)
@@ -198,7 +198,15 @@ func TestCleanSmudgeFilter(t *testing.T) {
 		t.Error(err)
 	}
 
-	err = repo1.Git(ctx, nil, nil, "checkout", strings.TrimSpace(c0.String()))
+	c1buf := bytes.NewBuffer(nil)
+	err = repo1.Git(ctx, nil, c1buf, "rev-parse", "HEAD")
+	if err != nil {
+		t.Error(err)
+	}
+
+	c1 :=  strings.TrimSpace(c1buf.String())
+
+	err = repo1.Git(ctx, nil, nil, "checkout", c0)
 	if err != nil {
 		t.Error(err)
 	}
@@ -211,91 +219,98 @@ func TestCleanSmudgeFilter(t *testing.T) {
 	if !bytes.Equal(originalContent.Bytes(), newContent) {
 		t.Error("after checkout, file content should be equal to content before edit")
 	}
+
+	keys := bytes.NewBuffer(nil)
+	err = repo1.Scan(c0, c1, keys)
+	if err != nil {
+		t.Error(err)
+	}
+
 }
 
-func TestPrePushHook(t *testing.T) {
-	ctx := context.Background()
-	ctx, _ = context.WithTimeout(ctx, time.Second*10)
-
-	remote1 := GitInitRemote(t)
-	wd1, repo1 := GitCloneWorkspace(remote1, t)
-
-	f1, err := os.Create(filepath.Join(wd1, "file_a.bin"))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	fsize := 33
-	randr := io.LimitReader(rand.Reader, int64(fsize))
-	_, err = io.Copy(f1, randr)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	err = repo1.Git(ctx, nil, nil, "add", "-A")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	err = repo1.Git(ctx, nil, nil, "commit", "-m", "base")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	err = repo1.Git(ctx, nil, nil, "push")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	defer f1.Close()
-	for i := 0; i < 3; i++ {
-		pos := mrand.Intn(fsize)
-		_, err = f1.WriteAt([]byte{0x01}, int64(pos))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		err = repo1.Git(ctx, nil, nil, "add", "-A")
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		err = repo1.Git(ctx, nil, nil, "commit", "-m", fmt.Sprintf("c%d", i))
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	buf := bytes.NewBuffer(nil)
-	err = repo1.Git(ctx, nil, buf, "rev-parse", "HEAD")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	localSha1 := strings.TrimSpace(buf.String())
-	if localSha1 == "" {
-		t.Fatal("expected local sha not to be empty")
-	}
-
-	buf = bytes.NewBuffer(nil)
-	err = repo1.Git(ctx, nil, buf, "ls-remote", "origin", "HEAD")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	remoteRef := strings.Fields(buf.String())
-	remoteSha1 := strings.TrimSpace(remoteRef[0])
-	if remoteSha1 == "" {
-		t.Fatal("expected remote sha not to be empty")
-	}
-
-	fmt.Println("local", localSha1, "remote", remoteSha1)
-
-	// @TODO test
-	// buf = bytes.NewBuffer(nil)
-	// err = repo1.GetPushedKeys(ctx, localSha1, remoteSha1, buf)
-	// if err != nil {
-	// 	t.Error(err)
-	// }
-
-}
+// func TestPrePushHook(t *testing.T) {
+// 	ctx := context.Background()
+// 	ctx, _ = context.WithTimeout(ctx, time.Second*10)
+//
+// 	remote1 := GitInitRemote(t)
+// 	wd1, repo1 := GitCloneWorkspace(remote1, t)
+//
+// 	f1, err := os.Create(filepath.Join(wd1, "file_a.bin"))
+// 	if err != nil {
+// 		t.Fatal(err)
+// 	}
+//
+// 	fsize := 33
+// 	randr := io.LimitReader(rand.Reader, int64(fsize))
+// 	_, err = io.Copy(f1, randr)
+// 	if err != nil {
+// 		t.Fatal(err)
+// 	}
+//
+// 	err = repo1.Git(ctx, nil, nil, "add", "-A")
+// 	if err != nil {
+// 		t.Fatal(err)
+// 	}
+//
+// 	err = repo1.Git(ctx, nil, nil, "commit", "-m", "base")
+// 	if err != nil {
+// 		t.Fatal(err)
+// 	}
+//
+// 	err = repo1.Git(ctx, nil, nil, "push")
+// 	if err != nil {
+// 		t.Fatal(err)
+// 	}
+//
+// 	defer f1.Close()
+// 	for i := 0; i < 3; i++ {
+// 		pos := mrand.Intn(fsize)
+// 		_, err = f1.WriteAt([]byte{0x01}, int64(pos))
+// 		if err != nil {
+// 			t.Fatal(err)
+// 		}
+//
+// 		err = repo1.Git(ctx, nil, nil, "add", "-A")
+// 		if err != nil {
+// 			t.Fatal(err)
+// 		}
+//
+// 		err = repo1.Git(ctx, nil, nil, "commit", "-m", fmt.Sprintf("c%d", i))
+// 		if err != nil {
+// 			t.Fatal(err)
+// 		}
+// 	}
+//
+// 	buf := bytes.NewBuffer(nil)
+// 	err = repo1.Git(ctx, nil, buf, "rev-parse", "HEAD")
+// 	if err != nil {
+// 		t.Fatal(err)
+// 	}
+//
+// 	localSha1 := strings.TrimSpace(buf.String())
+// 	if localSha1 == "" {
+// 		t.Fatal("expected local sha not to be empty")
+// 	}
+//
+// 	buf = bytes.NewBuffer(nil)
+// 	err = repo1.Git(ctx, nil, buf, "ls-remote", "origin", "HEAD")
+// 	if err != nil {
+// 		t.Fatal(err)
+// 	}
+//
+// 	remoteRef := strings.Fields(buf.String())
+// 	remoteSha1 := strings.TrimSpace(remoteRef[0])
+// 	if remoteSha1 == "" {
+// 		t.Fatal("expected remote sha not to be empty")
+// 	}
+//
+// 	fmt.Println("local", localSha1, "remote", remoteSha1)
+//
+// 	// @TODO test
+// 	// buf = bytes.NewBuffer(nil)
+// 	// err = repo1.GetPushedKeys(ctx, localSha1, remoteSha1, buf)
+// 	// if err != nil {
+// 	// 	t.Error(err)
+// 	// }
+//
+// }
