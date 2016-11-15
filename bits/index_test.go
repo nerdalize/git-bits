@@ -5,76 +5,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"io/ioutil"
-	"os"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/nerdalize/git-bits/bits"
 )
-
-func GitInitRemote(t *testing.T) (dir string) {
-	dir, err := ioutil.TempDir("", "test_remote_")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := exec.Command("git", "init", "--bare")
-	cmd.Dir = dir
-	cmd.Stderr = os.Stderr
-	err = cmd.Run()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	return dir
-}
-
-func GitCloneWorkspace(remote string, t *testing.T) (dir string, repo *bits.GitRepository) {
-	dir, err := ioutil.TempDir("", "test_remote_")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := exec.Command("git", "clone", remote, dir)
-	cmd.Dir = dir
-	cmd.Stderr = os.Stderr
-	err = cmd.Run()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	repo, err = bits.NewGitRepository(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	return dir, repo
-}
-
-func TestNewRepository(t *testing.T) {
-	_, err := bits.NewGitRepository("/tmp/my-bogus-repo")
-	if err == nil {
-		t.Errorf("creating repo in non-existing directory should fail")
-	} else {
-		if !strings.Contains(err.Error(), "no such file") {
-			t.Errorf("creating repo should fail with non existing dir error, got: %v", err)
-		}
-	}
-
-	tdir, _ := ioutil.TempDir("", "test_wdir_")
-	_, err = bits.NewGitRepository(tdir)
-	if err == nil {
-		t.Errorf("creating repo in non-git directory should fail")
-	} else {
-		if !strings.Contains(err.Error(), "exit status") {
-			t.Errorf("creating repo should fail with exit code, got: %v", err)
-		}
-	}
-
-}
 
 func TestGitIndexSaveLoad(t *testing.T) {
 	ctx := context.Background()
@@ -84,8 +20,7 @@ func TestGitIndexSaveLoad(t *testing.T) {
 	_, repo1 := GitCloneWorkspace(remote1, t)
 
 	var err error
-	var idx1 bits.SharedIndex
-	idx1, err = bits.NewGitIndex(repo1, "", "")
+	idx1, err := bits.NewIndex(repo1, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,14 +91,12 @@ func TestGitIndexPushPull(t *testing.T) {
 	_, repo2 := GitCloneWorkspace(remote1, t)
 
 	var err error
-	var idx1 bits.SharedIndex
-	var idx2 bits.SharedIndex
-	idx1, err = bits.NewGitIndex(repo1, "", "origin")
+	idx1, err := bits.NewIndex(repo1, "", "origin")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	idx2, err = bits.NewGitIndex(repo2, "", "origin")
+	idx2, err := bits.NewIndex(repo2, "", "origin")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,5 +144,4 @@ func TestGitIndexPushPull(t *testing.T) {
 	if ok, _ := idx2.Has(k3); !ok {
 		t.Error("expected index to have key 3")
 	}
-
 }

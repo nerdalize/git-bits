@@ -6,9 +6,6 @@ import (
 	"encoding/gob"
 	"fmt"
 	"io"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 )
 
@@ -20,84 +17,13 @@ var (
 	DefaultCommitMessage = "chunk index updated"
 )
 
-//GitRepository provides an abstraction on top of a Git repository in a
-//certain directory that is queried by git commands
-type GitRepository struct {
-	//Path the to the Git executable we're usng
-	exe string
-
-	//Path to the Git repository we're operating in
-	dir string
-
-	//Git stderr from executions will be written here
-	errOutput io.Writer
-}
-
-//NewGitRepository sets up a Git interface to a repository in the
-//provdided directory. It will fail if the get executable is not in
-//the shells PATH or if the directory doesnt seem to be a Git repository
-func NewGitRepository(dir string) (repo *GitRepository, err error) {
-	repo = &GitRepository{}
-	repo.exe, err = exec.LookPath("git")
-	if err != nil {
-		return nil, fmt.Errorf("git executable couldn't be found in your PATH: %v, make sure git it installed", err)
-	}
-
-	repo.dir, err = filepath.Abs(dir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to turn repository path '%s' into an absolute path: %v", dir, err)
-	}
-
-	//@TODO make this configurable
-	repo.errOutput = os.Stderr
-
-	err = repo.Git(nil, nil, nil, "status")
-	if err != nil {
-		return nil, fmt.Errorf("couldn't exec git status: %v", err)
-	}
-
-	return repo, nil
-}
-
-//Git runs the git executable with the working directory set to the repository director
-func (r *GitRepository) Git(ctx context.Context, in io.Reader, out io.Writer, args ...string) (err error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	cmd := exec.CommandContext(ctx, r.exe, args...)
-	cmd.Dir = r.dir
-	cmd.Stderr = r.errOutput
-	cmd.Stdin = in
-	cmd.Stdout = out
-
-	err = cmd.Run()
-	if err != nil {
-		return fmt.Errorf("failed to run `git %v`: %v", strings.Join(args, " "), err)
-	}
-
-	return nil
-}
-
-//GetPushedKeys is a high level command that is used in the pre-push hook to
-//fetch all chunk keys that are being pushed by Git. The (stile encoded) keys
-//are written to writer 'w'
-func (r *GitRepository) GetPushedKeys(localSha1 string, remoteSha1 string, w io.Writer) (err error) {
-	return fmt.Errorf("not yet implemented")
-}
-
-//We use Git for facilitating a shared chunk index
-func (r *GitRepository) GetIndexStore() (idx SharedIndex, err error) {
-	return idx, fmt.Errorf("not yet implemented")
-}
-
-//GitIndex store stores chunk keys in a specialty branch of a Git repository
+//Index stores chunk keys in a specialty branch of a Git repository
 //this branch can be shared by users to give others access (and knowledge)
 //of file chunks.
-type GitIndex struct {
+type Index struct {
 
 	//interface into the git repository this index is located in
-	repo *GitRepository
+	repo *Repository
 
 	//full name (refs/heads/...) of the local branch the index saves and loads from
 	branch string
@@ -109,9 +35,9 @@ type GitIndex struct {
 	set map[K]interface{}
 }
 
-//NewGitIndex will create a SharedIndex from a branch in the provided git
+//NewIndex will create a SharedIndex from a branch in the provided git
 //repository that can be pushed and pulled
-func NewGitIndex(repo *GitRepository, branch, remote string) (idx *GitIndex, err error) {
+func NewIndex(repo *Repository, branch, remote string) (idx *Index, err error) {
 	if branch == "" {
 		branch = DefaultIndexBranch
 	}
@@ -121,7 +47,7 @@ func NewGitIndex(repo *GitRepository, branch, remote string) (idx *GitIndex, err
 		return nil, fmt.Errorf("index branch '%s' must be provided as a full ref name: it doesnt start with '%s' ", branch, refsPrefix)
 	}
 
-	idx = &GitIndex{
+	idx = &Index{
 		repo:   repo,
 		branch: branch,
 		remote: remote,
@@ -134,7 +60,7 @@ func NewGitIndex(repo *GitRepository, branch, remote string) (idx *GitIndex, err
 //memory representation of the git index, if it cannot be found it could
 //mean the chunk doesnt exist, is not yet loaded from our specialty branch
 //or still resides in a remote index and needs to be pulled
-func (idx *GitIndex) Has(k K) (b bool, err error) {
+func (idx *Index) Has(k K) (b bool, err error) {
 	_, ok := idx.set[k]
 	return ok, nil
 }
@@ -142,19 +68,19 @@ func (idx *GitIndex) Has(k K) (b bool, err error) {
 //Add a key to the in-memory representation, it order to share this key
 //will first need to be saved to the Git database and then be pushed
 //to a git remote the other users can fetch from
-func (idx *GitIndex) Add(k K) (err error) {
+func (idx *Index) Add(k K) (err error) {
 	idx.set[k] = nil
 	return nil
 }
 
 //Serialize the Git index in-memory representation
-func (idx *GitIndex) Serialize(w io.Writer) (err error) {
+func (idx *Index) Serialize(w io.Writer) (err error) {
 	enc := gob.NewEncoder(w)
 	return enc.Encode(idx.set)
 }
 
 //Deserialize and overwrite the in-memory representation
-func (idx *GitIndex) Deserialize(r io.Reader) (err error) {
+func (idx *Index) Deserialize(r io.Reader) (err error) {
 	err = idx.Clear()
 	if err != nil {
 		return err
@@ -164,15 +90,15 @@ func (idx *GitIndex) Deserialize(r io.Reader) (err error) {
 	return dec.Decode(&idx.set)
 }
 
-func (idx *GitIndex) updateBranchCommit(ctx context.Context, sha1 string) (err error) {
+func (idx *Index) updateBranchCommit(ctx context.Context, sha1 string) (err error) {
 	return idx.repo.Git(ctx, nil, nil, "update-ref", idx.branch, sha1)
 }
 
-func (idx *GitIndex) readCommit(ctx context.Context, sha1 string, w io.Writer) (err error) {
+func (idx *Index) readCommit(ctx context.Context, sha1 string, w io.Writer) (err error) {
 	return idx.repo.Git(ctx, nil, w, "show", fmt.Sprintf("%s:remote.cidx", sha1))
 }
 
-func (idx *GitIndex) writeCommit(ctx context.Context, parentsSha1 ...string) (sha1 string, err error) {
+func (idx *Index) writeCommit(ctx context.Context, parentsSha1 ...string) (sha1 string, err error) {
 	in := bytes.NewBuffer(nil)
 	err = idx.Serialize(in)
 	if err != nil {
@@ -222,7 +148,7 @@ func (idx *GitIndex) writeCommit(ctx context.Context, parentsSha1 ...string) (sh
 	return sha1, nil
 }
 
-func (idx *GitIndex) showBranchCommit(ctx context.Context) (sha1 string, err error) {
+func (idx *Index) showBranchCommit(ctx context.Context) (sha1 string, err error) {
 	out := bytes.NewBuffer(nil)
 	err = idx.repo.Git(ctx, nil, out, "show-ref", "-s", idx.branch)
 	if err != nil {
@@ -233,7 +159,7 @@ func (idx *GitIndex) showBranchCommit(ctx context.Context) (sha1 string, err err
 }
 
 //Save will perisst the in-memory representation to the Git database
-func (idx *GitIndex) Save(ctx context.Context) (err error) {
+func (idx *Index) Save(ctx context.Context) (err error) {
 	c1, err := idx.showBranchCommit(ctx)
 	if err != nil && !strings.Contains(err.Error(), "exit status 1") {
 		//'exit status 1' means the branch doesnt exist, thats OK it will be
@@ -262,7 +188,7 @@ func (idx *GitIndex) Save(ctx context.Context) (err error) {
 
 //Load will overwrite the in-memory representation with the contents
 //from the Git database
-func (idx *GitIndex) Load(ctx context.Context) (err error) {
+func (idx *Index) Load(ctx context.Context) (err error) {
 	sha1, err := idx.showBranchCommit(ctx)
 	if err != nil || sha1 == "" {
 		return nil //nothing to load
@@ -284,7 +210,7 @@ func (idx *GitIndex) Load(ctx context.Context) (err error) {
 
 //Pull will fetch and merge a remote index with the local branch,
 //it does not immediately update the in-memory representation
-func (idx *GitIndex) Pull(ctx context.Context) (err error) {
+func (idx *Index) Pull(ctx context.Context) (err error) {
 	if idx.remote == "" {
 		return fmt.Errorf("index wasnt configured with a remote to push and pull from: %v", err)
 	}
@@ -346,7 +272,7 @@ func (idx *GitIndex) Pull(ctx context.Context) (err error) {
 			return fmt.Errorf("failed to decode old head: %v", err)
 		}
 
-		tmpIndx, err := NewGitIndex(idx.repo, idx.branch, idx.remote)
+		tmpIndx, err := NewIndex(idx.repo, idx.branch, idx.remote)
 		if err != nil {
 			return fmt.Errorf("failed to setup tmp git index: %v", err)
 		}
@@ -382,7 +308,7 @@ func (idx *GitIndex) Pull(ctx context.Context) (err error) {
 //Push will send the contents of the local index branch to a Git remote
 //such that other users can pull and merge to gain knowledge of newly
 //uploaded chunks
-func (idx *GitIndex) Push(ctx context.Context) (err error) {
+func (idx *Index) Push(ctx context.Context) (err error) {
 	if idx.remote == "" {
 		return fmt.Errorf("index wasnt configured with a remote to push and pull from: %v", err)
 	}
@@ -391,7 +317,7 @@ func (idx *GitIndex) Push(ctx context.Context) (err error) {
 }
 
 //Clear will whipe the in-memory representation of the index
-func (idx *GitIndex) Clear() (err error) {
+func (idx *Index) Clear() (err error) {
 	idx.set = map[K]interface{}{}
 	return nil
 }

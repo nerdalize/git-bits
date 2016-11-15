@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/mitchellh/cli"
+	"github.com/nerdalize/git-bits/bits"
 )
 
 type Clean struct {
@@ -38,6 +39,23 @@ func (cmd *Clean) Synopsis() string { return "..." }
 // command-line arguments. It returns the exit status when it is
 // finished.
 func (cmd *Clean) Run(args []string) int {
+	wd, err := os.Getwd()
+	if err != nil {
+		cmd.ui.Error(fmt.Sprintf("Failed to get working directory: %v", err))
+		return 1
+	}
+
+	repo, err := bits.NewRepository(wd)
+	if err != nil {
+		cmd.ui.Error(fmt.Sprintf("Failed to setup repository: %v", err))
+		return 2
+	}
+
+	err = repo.Clean(os.Stdin, os.Stdout)
+	if err != nil {
+		cmd.ui.Error(fmt.Sprintf("Failed to clean: %v", err))
+		return 3
+	}
 
 	return 0
 }
