@@ -1,10 +1,12 @@
 package bits
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha1"
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -123,6 +125,15 @@ func (repo *Repository) Clean(r io.Reader, w io.Writer) (err error) {
 		}
 
 		k := sha256.Sum256(chunk.Data)
+		printk := func(k K) error {
+			_, err = fmt.Fprintf(out, "%x\n", k)
+			if err != nil {
+				return fmt.Errorf("failed to write key to output: %v", err)
+			}
+
+			return nil
+		}
+
 		err = func() error {
 
 			//@TODO encrypt chunks
@@ -139,25 +150,22 @@ func (repo *Repository) Clean(r io.Reader, w io.Writer) (err error) {
 			f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0666)
 			if err != nil {
 				if os.IsExist(err) {
-					return nil
+					//already writen, all good; output key
+					return printk(k)
 				}
 
 				return fmt.Errorf("Failed to open chunk file '%s' for writing: %v", p, err)
 			}
 
+			//write chunk file
 			defer f.Close()
 			n, err := f.Write(chunk.Data)
 			if err != nil {
 				return fmt.Errorf("Failed to write chunk '%x' (wrote %d bytes): %v", k, n, err)
 			}
 
-			//output chunk key
-			_, err = fmt.Fprintf(out, "%x\n", k)
-			if err != nil {
-				return fmt.Errorf("failed to write key to output: %v", err)
-			}
-
-			return nil
+			//output key
+			return printk(k)
 		}()
 
 		if err != nil {
@@ -168,7 +176,15 @@ func (repo *Repository) Clean(r io.Reader, w io.Writer) (err error) {
 	//hash the blob with key as git would hash it
 	blobHash := sha1.New()
 	_, err = fmt.Fprintf(blobHash, "blob %d", blob.Len())
+	if err != nil {
+		return fmt.Errorf("failed to write keys for blob hash: %v", err)
+	}
+
 	_, err = blobHash.Write([]byte{0x00})
+	if err != nil {
+		return fmt.Errorf("failed to write keys for blob hash: %v", err)
+	}
+
 	_, err = io.Copy(blobHash, blob)
 	if err != nil {
 		return fmt.Errorf("failed to write keys for blob hash: %v", err)
@@ -189,7 +205,51 @@ func (repo *Repository) Clean(r io.Reader, w io.Writer) (err error) {
 //chunk from the local space - or if not present locally - from a remote store. Chunks
 //are then decrypted and combined in the original file and written to writer 'w'
 func (repo *Repository) Smudge(r io.Reader, w io.Writer) (err error) {
-	_, err = io.Copy(w, r) //@TODO implementation
+	s := bufio.NewScanner(r)
+	for s.Scan() {
+		data := make([]byte, hex.DecodedLen(len(s.Bytes())))
+		_, err = hex.Decode(data, s.Bytes())
+		if err != nil {
+			return fmt.Errorf("failed to decode '%x' as hex: %v", s.Bytes(), err)
+		}
+
+		k := K{}
+		if len(k) != len(data) {
+			return fmt.Errorf("decoded chunk key '%x' has an invalid lenght %d, expected %d", data, len(data), len(k))
+		}
+
+		copy(k[:], data[:32])
+		err = func() error {
+
+			//open chunk file
+			p := filepath.Join(repo.chunkDir, fmt.Sprintf("%x", k[:2]), fmt.Sprintf("%x", k[2:]))
+			f, err := os.OpenFile(p, os.O_RDONLY, 0666)
+			if err != nil {
+				return fmt.Errorf("failed to open chunk '%x' at '%s': %v", k, p, err)
+			}
+
+			//@TODO decrypt chunk
+
+			//copy chunk bytes to output
+			defer f.Close()
+			n, err := io.Copy(w, f)
+			if err != nil {
+				return fmt.Errorf("failed to copy chunk '%x' content after %d bytes: %v", k, n, err)
+			}
+
+			fmt.Fprintf(os.Stderr, "key %x", k)
+			return nil
+		}()
+
+		if err != nil {
+			return fmt.Errorf("Failed to combine chunk '%x': %v", k, err)
+		}
+	}
+
+	if err = s.Err(); err != nil {
+		return fmt.Errorf("failed to scan smudge input: %v", err)
+	}
+
 	return nil
 }
 

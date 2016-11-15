@@ -145,23 +145,72 @@ func TestCleanSmudgeFilter(t *testing.T) {
 
 	GitConfigure(t, ctx, repo1, map[string]string{
 		"filter.bits.clean":    "git-bits git clean",
-		"filter.bits.smudge":   "cat",
+		"filter.bits.smudge":   "git-bits git smudge",
 		"filter.bits.required": "true",
 	})
 
-	f1 := WriteRandomFile(t, filepath.Join(wd1, "file1.bin"), 2*1024*1024)
-	defer f1.Close()
+	fpath := filepath.Join(wd1, "file1.bin")
+	f1 := WriteRandomFile(t, fpath, 2*1024*1024)
+	f1.Close()
 
-	repo1.Git(ctx, nil, nil, "add", "-A")
-	repo1.Git(ctx, nil, nil, "commit", "-m", "c0")
+	err := repo1.Git(ctx, nil, nil, "add", "-A")
+	if err != nil {
+		t.Error(err)
+	}
 
-	f1.WriteAt([]byte{0x00}, 5)
+	err = repo1.Git(ctx, nil, nil, "commit", "-m", "c0")
+	if err != nil {
+		t.Error(err)
+	}
 
-	repo1.Git(ctx, nil, nil, "add", "-A")
-	repo1.Git(ctx, nil, nil, "commit", "-m", "c1")
+	c0 := bytes.NewBuffer(nil)
+	err = repo1.Git(ctx, nil, c0, "rev-parse", "HEAD")
+	if err != nil {
+		t.Error(err)
+	}
 
-	_ = f1
+	originalContent := bytes.NewBuffer(nil)
 
+	f2, err := os.OpenFile(fpath, os.O_RDWR, 0666)
+	if err != nil {
+		t.Error(err)
+	}
+
+	_, err = io.Copy(originalContent, f2)
+	if err != nil {
+		t.Error(err)
+	}
+
+	_, err = f2.WriteAt([]byte{0x00}, 5)
+	if err != nil {
+		t.Error(err)
+	}
+
+	f2.Close()
+
+	err = repo1.Git(ctx, nil, nil, "add", "-A")
+	if err != nil {
+		t.Error(err)
+	}
+
+	err = repo1.Git(ctx, nil, nil, "commit", "-m", "c1")
+	if err != nil {
+		t.Error(err)
+	}
+
+	err = repo1.Git(ctx, nil, nil, "checkout", strings.TrimSpace(c0.String()))
+	if err != nil {
+		t.Error(err)
+	}
+
+	newContent, err := ioutil.ReadFile(fpath)
+	if err != nil {
+		t.Error(err)
+	}
+
+	if !bytes.Equal(originalContent.Bytes(), newContent) {
+		t.Error("after checkout, file content should be equal to content before edit")
+	}
 }
 
 func TestPrePushHook(t *testing.T) {
