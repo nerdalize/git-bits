@@ -25,7 +25,7 @@ function run_test { #run test suite of itself and its dependencies
 		-var aws_secret_key="${AWS_SECRET_ACCESS_KEY}"
 
 	export TEST_BUCKET=$(terraform output bucket)
-	go test ./...
+	go test -v bits/*_test.go
 
 	terraform destroy \
 		-var aws_access_key="${AWS_ACCESS_KEY_ID}" \

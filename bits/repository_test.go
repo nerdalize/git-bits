@@ -138,7 +138,6 @@ func TestSplitCombineScan(t *testing.T) {
 
 	remote1 := GitInitRemote(t)
 	wd1, repo1 := GitCloneWorkspace(remote1, t)
-
 	WriteGitAttrFile(t, wd1, map[string]string{
 		"*.bin": "filter=bits",
 	})
@@ -238,7 +237,6 @@ func TestPrePushHook(t *testing.T) {
 
 	remote1 := GitInitRemote(t)
 	wd1, repo1 := GitCloneWorkspace(remote1, t)
-
 	WriteGitAttrFile(t, wd1, map[string]string{
 		"*.bin": "filter=bits",
 	})
@@ -249,19 +247,12 @@ func TestPrePushHook(t *testing.T) {
 		"filter.bits.required": "true",
 	})
 
-	f1, err := os.Create(filepath.Join(wd1, "file_a.bin"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	fsize := int64(5 * 1024 * 1024)
+	fpath := filepath.Join(wd1, "file_a.bin")
+	f1 := WriteRandomFile(t, fpath, fsize)
+	f1.Close()
 
-	fsize := 5 * 1024 * 1024
-	randr := io.LimitReader(rand.Reader, int64(fsize))
-	_, err = io.Copy(f1, randr)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	err = repo1.Git(ctx, nil, nil, "add", "-A")
+	err := repo1.Git(ctx, nil, nil, "add", "-A")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,23 +267,30 @@ func TestPrePushHook(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	defer f1.Close()
 	for i := 0; i < 3; i++ {
-		pos := mrand.Intn(fsize)
-		_, err = f1.WriteAt([]byte{0x01}, int64(pos))
-		if err != nil {
-			t.Fatal(err)
-		}
+		func() {
+			f, err := os.OpenFile(fpath, os.O_RDWR, 0666)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		err = repo1.Git(ctx, nil, nil, "add", "-A")
-		if err != nil {
-			t.Fatal(err)
-		}
+			defer f.Close()
+			pos := mrand.Int63n(fsize)
+			_, err = f.WriteAt([]byte{0x01}, pos)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		err = repo1.Git(ctx, nil, nil, "commit", "-m", fmt.Sprintf("c%d", i))
-		if err != nil {
-			t.Fatal(err)
-		}
+			err = repo1.Git(ctx, nil, nil, "add", "-A")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			err = repo1.Git(ctx, nil, nil, "commit", "-m", fmt.Sprintf("c%d", i))
+			if err != nil {
+				t.Fatal(err)
+			}
+		}()
 	}
 
 	buf := bytes.NewBuffer(nil)
@@ -320,6 +318,11 @@ func TestPrePushHook(t *testing.T) {
 
 	scanbuf := bytes.NewBuffer(nil)
 	err = repo1.Scan(remoteSha1, localSha1, scanbuf)
+	if err != nil {
+		t.Error(err)
+	}
+
+	err = repo1.Push(scanbuf, "origin")
 	if err != nil {
 		t.Error(err)
 	}

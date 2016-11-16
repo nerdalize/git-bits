@@ -45,6 +45,9 @@ type Repository struct {
 
 	//Footer Key allows us to recognize the end of a key listing
 	footer []byte
+
+	//remotes hold the remote chunk stores we're using
+	remotes []Remote
 }
 
 //NewRepository sets up an interface on top of a Git repository in the
@@ -78,13 +81,19 @@ func NewRepository(dir string) (repo *Repository, err error) {
 	}
 
 	//setup header and footers
-	repo.header = []byte("HEADER0000000000000000000000000000000000000000000000000000000000\n")
-	repo.footer = []byte("FOOTER0000000000000000000000000000000000000000000000000000000000\n")
-
+	repo.header = []byte("-------------------------CHUNKS_START---------------------------\n")
+	repo.footer = []byte("--------------------------CHUNKS_END----------------------------\n")
 	if len(repo.header) != (hex.EncodedLen(KeySize)+1) || len(repo.footer) != (hex.EncodedLen(KeySize)+1) {
 		return nil, fmt.Errorf("repository header and footer size are not '%d': header: %d, footer: %d", hex.EncodedLen(KeySize)+1, len(repo.header), len(repo.footer))
 	}
 
+	//@TODO make "origin" remote configurable
+	def, err := NewS3Remote(repo, "origin")
+	if err != nil {
+		return nil, fmt.Errorf("unable to setup default chunk remote: %v", err)
+	}
+
+	repo.remotes = append(repo.remotes, def)
 	return repo, nil
 }
 
@@ -106,6 +115,122 @@ func (repo *Repository) Git(ctx context.Context, in io.Reader, out io.Writer, ar
 	}
 
 	return nil
+}
+
+//Push takes a list of chunk keys on reader 'r' and moves each chunk from
+//the local storage to the remote store with name 'remote'.
+func (repo *Repository) Push(r io.Reader, remoteName string) (err error) {
+
+	//get the remote we're interested in
+	var remote Remote
+	available := []string{}
+	for _, r := range repo.remotes {
+		available = append(available, r.Name())
+		if r.Name() == remoteName {
+			remote = r
+		}
+	}
+
+	if remote == nil {
+		return fmt.Errorf("no remote in repository named '%s', available %v", remoteName, available)
+	}
+
+	//scan for chunk keys
+	indexed := []K{}
+	s := bufio.NewScanner(r)
+	for s.Scan() {
+
+		//we skip header and footer lines
+		if bytes.Equal(s.Bytes(), repo.header[:len(repo.header)-1]) || bytes.Equal(s.Bytes(), repo.footer[:len(repo.footer)-1]) {
+			continue
+		}
+
+		//decode actual keys
+		data := make([]byte, hex.DecodedLen(len(s.Bytes())))
+		_, err = hex.Decode(data, s.Bytes())
+		if err != nil {
+			return fmt.Errorf("failed to decode '%x' as hex: %v", s.Bytes(), err)
+		}
+
+		k := K{}
+		if len(k) != len(data) {
+			return fmt.Errorf("decoded chunk key '%x' has an invalid lenght %d, expected %d", data, len(data), len(k))
+		}
+
+		copy(k[:], data[:KeySize])
+		err = func() error {
+
+			//check if remote has the key
+			ok, err := remote.Index().Has(k)
+			if err != nil {
+				return fmt.Errorf("failed to check remote index: %v", err)
+			}
+
+			if ok {
+				return nil //skip push
+			}
+
+			//open local chunk file
+			p := filepath.Join(repo.chunkDir, fmt.Sprintf("%x", k[:2]), fmt.Sprintf("%x", k[2:]))
+			f, err := os.OpenFile(p, os.O_RDONLY, 0666)
+			if err != nil {
+				return fmt.Errorf("failed to open chunk '%x' at '%s' for pushing: %v", k, p, err)
+			}
+
+			//get remote writer
+			defer f.Close()
+			wc, err := remote.ChunkWriter(k)
+			if err != nil {
+				return fmt.Errorf("failed to get chunk writer: %v", err)
+			}
+
+			//start upload
+			defer wc.Close()
+			n, err := io.Copy(wc, f)
+			if err != nil {
+				return fmt.Errorf("failed to copy file '%s' to remote writer after %d bytes: %v", f.Name(), n, err)
+			}
+
+			//add key to remote index
+			err = remote.Index().Add(k)
+			if err != nil {
+				return fmt.Errorf("failed to add key '%x' to remote index: %v", err)
+			}
+
+			//record number of newly indexed keys
+			indexed = append(indexed, k)
+			return nil
+		}()
+	}
+
+	if err = s.Err(); err != nil {
+		return fmt.Errorf("failed to scan push input: %v", err)
+	}
+
+	//if some new keys were indexed for the remote save
+	//and push the index for others to pull
+	if len(indexed) > 0 {
+		ctx := context.Background()
+		err = remote.Index().Save(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to save index: %v", err)
+		}
+
+		err = remote.Index().Push(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to push ined: %v", err)
+		}
+	}
+
+	return nil
+}
+
+//Fetch takes a list of chunk keys on reader 'r' ...
+func (repo *Repository) Fetch(r io.Reader) (err error) {
+	//if it exists locally, skip
+	//check the remote's index and if its there fetch it
+
+	return fmt.Errorf("not yet implemented")
 }
 
 //Scan will traverse git objects between commit 'left' and 'right', it will
@@ -218,7 +343,7 @@ func (repo *Repository) Scan(left, right string, w io.Writer) (err error) {
 		}
 
 		//if we found keys, output each key on a new line
-		//but only if we didn't see it yet
+		//but only if we didn't output it before
 		if recording {
 			if _, ok := scanned[s.Text()]; !ok {
 				fmt.Fprintf(w, "%s\n", s.Text())
@@ -346,10 +471,15 @@ func (repo *Repository) Combine(r io.Reader, w io.Writer) (err error) {
 			p := filepath.Join(repo.chunkDir, fmt.Sprintf("%x", k[:2]), fmt.Sprintf("%x", k[2:]))
 			f, err := os.OpenFile(p, os.O_RDONLY, 0666)
 			if err != nil {
+
+				//@TODO lookup at each remote and if the chunk is in its index fetch it and try again
+				//@TODO if initial lookup failed keep retrying to pull the index until a key is found somewhere
+
 				return fmt.Errorf("failed to open chunk '%x' at '%s': %v", k, p, err)
 			}
 
 			//@TODO decrypt chunk
+			//@TODO verify chunk content
 
 			//copy chunk bytes to output
 			defer f.Close()

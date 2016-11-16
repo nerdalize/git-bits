@@ -105,3 +105,10 @@ type KeyEncoding interface {
 	Decode(r io.Reader) (keys []K, err error)
 	Encode(key []K, w io.Writer) (err error)
 }
+
+type Remote interface {
+	Index() *Index
+	Name() string
+	ChunkReader(k K) (rc io.ReadCloser, err error)
+	ChunkWriter(k K) (wc io.WriteCloser, err error)
+}
