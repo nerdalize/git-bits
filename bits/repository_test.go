@@ -233,7 +233,7 @@ func TestSplitCombineScan(t *testing.T) {
 
 func TestPushFetch(t *testing.T) {
 	ctx := context.Background()
-	ctx, _ = context.WithTimeout(ctx, time.Second*30)
+	ctx, _ = context.WithTimeout(ctx, time.Second*60)
 
 	remote1 := GitInitRemote(t)
 	wd1, repo1 := GitCloneWorkspace(remote1, t)

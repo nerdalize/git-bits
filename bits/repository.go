@@ -122,6 +122,46 @@ func (repo *Repository) Git(ctx context.Context, in io.Reader, out io.Writer, ar
 // install hook
 // replace pointers?
 func (repo *Repository) Init() (err error) {
+	return fmt.Errorf("not yet implemented")
+}
+
+//ForEach is a convenient method for running logic for each chunk
+//key in stream 'r', it will automatically skip the chunk header and footer
+func (repo *Repository) ForEach(r io.Reader, fn func(K) error) error {
+	s := bufio.NewScanner(r)
+	for s.Scan() {
+
+		//skip headers/footers
+		if bytes.Equal(s.Bytes(), repo.header[:len(repo.header)-1]) ||
+			bytes.Equal(s.Bytes(), repo.footer[:len(repo.footer)-1]) {
+			continue
+		}
+
+		//decode the actual keys
+		data := make([]byte, hex.DecodedLen(len(s.Bytes())))
+		_, err := hex.Decode(data, s.Bytes())
+		if err != nil {
+			return fmt.Errorf("failed to decode '%x' as hex: %v", s.Bytes(), err)
+		}
+
+		//check key length
+		k := K{}
+		if len(k) != len(data) {
+			return fmt.Errorf("decoded chunk key '%x' has an invalid length %d, expected %d", data, len(data), len(k))
+		}
+
+		//fill K and hand it over
+		copy(k[:], data[:KeySize])
+		err = fn(k)
+		if err != nil {
+			return fmt.Errorf("failed to handle key '%x': %v", k, err)
+		}
+	}
+
+	if err := s.Err(); err != nil {
+		return fmt.Errorf("failed to scan chunk keys: %v", err)
+	}
+
 	return nil
 }
 
@@ -145,74 +185,53 @@ func (repo *Repository) Push(r io.Reader, remoteName string) (err error) {
 
 	//scan for chunk keys
 	indexed := []K{}
-	s := bufio.NewScanner(r)
-	for s.Scan() {
+	err = repo.ForEach(r, func(k K) error {
 
-		//we skip header and footer lines
-		if bytes.Equal(s.Bytes(), repo.header[:len(repo.header)-1]) || bytes.Equal(s.Bytes(), repo.footer[:len(repo.footer)-1]) {
-			continue
-		}
-
-		//decode actual keys
-		data := make([]byte, hex.DecodedLen(len(s.Bytes())))
-		_, err = hex.Decode(data, s.Bytes())
+		//check if remote has the key
+		ok, err := remote.Index().Has(k)
 		if err != nil {
-			return fmt.Errorf("failed to decode '%x' as hex: %v", s.Bytes(), err)
+			return fmt.Errorf("failed to check remote index: %v", err)
 		}
 
-		k := K{}
-		if len(k) != len(data) {
-			return fmt.Errorf("decoded chunk key '%x' has an invalid lenght %d, expected %d", data, len(data), len(k))
+		if ok {
+			return nil //skip push
 		}
 
-		copy(k[:], data[:KeySize])
-		err = func() error {
+		//open local chunk file
+		p, _ := repo.Path(k, false)
+		f, err := os.OpenFile(p, os.O_RDONLY, 0666)
+		if err != nil {
+			return fmt.Errorf("failed to open chunk '%x' at '%s' for pushing: %v", k, p, err)
+		}
 
-			//check if remote has the key
-			ok, err := remote.Index().Has(k)
-			if err != nil {
-				return fmt.Errorf("failed to check remote index: %v", err)
-			}
+		//get remote writer
+		defer f.Close()
+		wc, err := remote.ChunkWriter(k)
+		if err != nil {
+			return fmt.Errorf("failed to get chunk writer: %v", err)
+		}
 
-			if ok {
-				return nil //skip push
-			}
+		//start upload
+		defer wc.Close()
+		n, err := io.Copy(wc, f)
+		if err != nil {
+			return fmt.Errorf("failed to copy file '%s' to remote writer after %d bytes: %v", f.Name(), n, err)
+		}
 
-			//open local chunk file
-			p := filepath.Join(repo.chunkDir, fmt.Sprintf("%x", k[:2]), fmt.Sprintf("%x", k[2:]))
-			f, err := os.OpenFile(p, os.O_RDONLY, 0666)
-			if err != nil {
-				return fmt.Errorf("failed to open chunk '%x' at '%s' for pushing: %v", k, p, err)
-			}
+		//add key to remote index
+		err = remote.Index().Add(k)
+		if err != nil {
+			return fmt.Errorf("failed to add key '%x' to remote index: %v", err)
+		}
 
-			//get remote writer
-			defer f.Close()
-			wc, err := remote.ChunkWriter(k)
-			if err != nil {
-				return fmt.Errorf("failed to get chunk writer: %v", err)
-			}
+		//record number of newly indexed keys
+		indexed = append(indexed, k)
+		return nil
 
-			//start upload
-			defer wc.Close()
-			n, err := io.Copy(wc, f)
-			if err != nil {
-				return fmt.Errorf("failed to copy file '%s' to remote writer after %d bytes: %v", f.Name(), n, err)
-			}
+	})
 
-			//add key to remote index
-			err = remote.Index().Add(k)
-			if err != nil {
-				return fmt.Errorf("failed to add key '%x' to remote index: %v", err)
-			}
-
-			//record number of newly indexed keys
-			indexed = append(indexed, k)
-			return nil
-		}()
-	}
-
-	if err = s.Err(); err != nil {
-		return fmt.Errorf("failed to scan push input: %v", err)
+	if err != nil {
+		return fmt.Errorf("failed to loop over each key: %v", err)
 	}
 
 	//if some new keys were indexed for the remote save
@@ -233,12 +252,75 @@ func (repo *Repository) Push(r io.Reader, remoteName string) (err error) {
 	return nil
 }
 
-//Fetch takes a list of chunk keys on reader 'r' ...
+//Fetch takes a list of chunk keys on reader 'r' and will ask each
+//remote's index if the chunk is stored there. If it is move the chunk
+//to the local storage
 func (repo *Repository) Fetch(r io.Reader) (err error) {
-	//if it exists locally, skip
-	//check the remote's index and if its there fetch it
+	return repo.ForEach(r, func(k K) error {
+		//@TODO actually test this
 
-	return fmt.Errorf("not yet implemented")
+		//find a remote that holds the key
+		var remote Remote
+		for _, r := range repo.remotes {
+			ok, err := r.Index().Has(k)
+			if err != nil {
+				//@TODO report
+			}
+
+			if ok {
+				remote = r
+				break
+			}
+		}
+
+		if remote == nil {
+			return fmt.Errorf("failed to find remote that holds key '%x'", k)
+		}
+
+		//setup chunk path
+		p, err := repo.Path(k, true)
+		if err != nil {
+			return fmt.Errorf("failed to create chunk path for key '%x': %v", k, err)
+		}
+
+		//attempt to open, if its already assume it was written concurrently
+		f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0666)
+		if err != nil {
+			if os.IsExist(err) {
+				return nil
+			}
+
+			return fmt.Errorf("failed to open chunk file '%s' for writing: %v", p, err)
+		}
+
+		rc, err := remote.ChunkReader(k)
+		if err != nil {
+			return fmt.Errorf("failed to get chunk reader for key '%x': %v", k, err)
+		}
+
+		defer rc.Close()
+		_, err = io.Copy(f, rc)
+		if err != nil {
+			return fmt.Errorf("failed to clone chunk '%x' from remote: %v", err)
+		}
+
+		return nil
+	})
+}
+
+//Path returns the local path to the chunk file based on the key, it can
+//create required directories when 'mkdir' is set to true, in that case
+//err might container directory creation failure
+func (repo *Repository) Path(k K, mkdir bool) (p string, err error) {
+	dir := filepath.Join(repo.chunkDir, fmt.Sprintf("%x", k[:2]))
+	if mkdir {
+		err = os.MkdirAll(dir, 0777)
+		if err != nil {
+			return "", fmt.Errorf("failed to create chunk dir '%s': %v", dir, err)
+		}
+	}
+
+	return filepath.Join(dir, fmt.Sprintf("%x", k[2:])), nil
 }
 
 //Scan will traverse git objects between commit 'left' and 'right', it will
@@ -382,6 +464,7 @@ func (repo *Repository) Split(r io.Reader, w io.Writer) (err error) {
 	bufr := bufio.NewReader(r)
 	hdr, _ := bufr.Peek(hex.EncodedLen(KeySize) + 1)
 	if bytes.Equal(hdr, repo.header) {
+
 		//@TODO unit test this
 		_, err := io.Copy(w, bufr)
 		if err != nil {
@@ -421,21 +504,18 @@ func (repo *Repository) Split(r io.Reader, w io.Writer) (err error) {
 
 		err = func() error {
 
-			//@TODO encrypt chunks
-
-			//setup chunk directory
-			dir := filepath.Join(repo.chunkDir, fmt.Sprintf("%x", k[:2]))
-			err = os.MkdirAll(dir, 0777)
+			//formulate path
+			p, err := repo.Path(k, true)
 			if err != nil {
-				return fmt.Errorf("failed to create chunk dir '%s': %v", dir, err)
+				return fmt.Errorf("failed to create chunk dir for '%x': %v", k, err)
 			}
 
-			//open chunk, if already exists nothing to write
-			p := filepath.Join(dir, fmt.Sprintf("%x", k[2:]))
+			//attempt to open, create if nont existing
 			f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0666)
 			if err != nil {
+
+				//if its already written, all good; output key
 				if os.IsExist(err) {
-					//already writen, all good; output key
 					return printk(k)
 				}
 
@@ -465,60 +545,33 @@ func (repo *Repository) Split(r io.Reader, w io.Writer) (err error) {
 //chunk from the local space - or if not present locally - from a remote store. Chunks
 //are then decrypted and combined in the original file and written to writer 'w'
 func (repo *Repository) Combine(r io.Reader, w io.Writer) (err error) {
-	s := bufio.NewScanner(r)
-	for s.Scan() {
+	err = repo.ForEach(r, func(k K) error {
 
-		//we skip header and footer lines
-		if bytes.Equal(s.Bytes(), repo.header[:len(repo.header)-1]) || bytes.Equal(s.Bytes(), repo.footer[:len(repo.footer)-1]) {
-			continue
-		}
-
-		//decode actual keys
-		data := make([]byte, hex.DecodedLen(len(s.Bytes())))
-		_, err = hex.Decode(data, s.Bytes())
+		//open chunk file
+		p, _ := repo.Path(k, false)
+		f, err := os.OpenFile(p, os.O_RDONLY, 0666)
 		if err != nil {
-			return fmt.Errorf("failed to decode '%x' as hex: %v", s.Bytes(), err)
+
+			//@TODO lookup at each remote and if the chunk is in its index fetch it and try again
+			//@TODO if initial lookup failed keep retrying to pull the index until a key is found somewhere
+			return fmt.Errorf("failed to open chunk '%x' at '%s': %v", k, p, err)
 		}
 
-		k := K{}
-		if len(k) != len(data) {
-			return fmt.Errorf("decoded chunk key '%x' has an invalid lenght %d, expected %d", data, len(data), len(k))
-		}
+		//@TODO decrypt chunk
+		//@TODO verify chunk content
 
-		copy(k[:], data[:KeySize])
-		err = func() error {
-
-			//open chunk file
-			p := filepath.Join(repo.chunkDir, fmt.Sprintf("%x", k[:2]), fmt.Sprintf("%x", k[2:]))
-			f, err := os.OpenFile(p, os.O_RDONLY, 0666)
-			if err != nil {
-
-				//@TODO lookup at each remote and if the chunk is in its index fetch it and try again
-				//@TODO if initial lookup failed keep retrying to pull the index until a key is found somewhere
-
-				return fmt.Errorf("failed to open chunk '%x' at '%s': %v", k, p, err)
-			}
-
-			//@TODO decrypt chunk
-			//@TODO verify chunk content
-
-			//copy chunk bytes to output
-			defer f.Close()
-			n, err := io.Copy(w, f)
-			if err != nil {
-				return fmt.Errorf("failed to copy chunk '%x' content after %d bytes: %v", k, n, err)
-			}
-
-			return nil
-		}()
-
+		//copy chunk bytes to output
+		defer f.Close()
+		n, err := io.Copy(w, f)
 		if err != nil {
-			return fmt.Errorf("Failed to combine chunk '%x': %v", k, err)
+			return fmt.Errorf("failed to copy chunk '%x' content after %d bytes: %v", k, n, err)
 		}
-	}
 
-	if err = s.Err(); err != nil {
-		return fmt.Errorf("failed to scan smudge input: %v", err)
+		return nil
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to loop over keys: %v", err)
 	}
 
 	return nil

@@ -20,6 +20,7 @@ func main() {
 	c.Commands = map[string]cli.CommandFactory{
 		"scan":    command.NewScan,
 		"split":   command.NewSplit,
+		"fetch":   command.NewFetch,
 		"combine": command.NewCombine,
 	}
 

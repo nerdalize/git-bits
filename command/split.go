@@ -55,7 +55,7 @@ func (cmd *Split) Run(args []string) int {
 
 	err = repo.Split(os.Stdin, os.Stdout)
 	if err != nil {
-		cmd.ui.Error(fmt.Sprintf("failed to clean: %v", err))
+		cmd.ui.Error(fmt.Sprintf("failed to split: %v", err))
 		return 3
 	}
 
