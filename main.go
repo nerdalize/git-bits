@@ -6,7 +6,7 @@ import (
 
 	"github.com/mitchellh/cli"
 
-	"github.com/nerdalize/git-bits/command/git"
+	"github.com/nerdalize/git-bits/command"
 )
 
 var (
@@ -18,9 +18,9 @@ func main() {
 	c := cli.NewCLI(name, version)
 	c.Args = os.Args[1:]
 	c.Commands = map[string]cli.CommandFactory{
-		"git scan":   gitcommand.NewScan,
-		"git clean":  gitcommand.NewClean,
-		"git smudge": gitcommand.NewSmudge,
+		"scan":    command.NewScan,
+		"split":   command.NewSplit,
+		"combine": command.NewCombine,
 	}
 
 	status, err := c.Run()

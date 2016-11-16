@@ -144,8 +144,8 @@ func TestCleanSmudgeFilter(t *testing.T) {
 	})
 
 	GitConfigure(t, ctx, repo1, map[string]string{
-		"filter.bits.clean":    "git-bits git clean",
-		"filter.bits.smudge":   "git-bits git smudge",
+		"filter.bits.clean":    "git bits split",
+		"filter.bits.smudge":   "git bits combine",
 		"filter.bits.required": "true",
 	})
 
@@ -308,7 +308,13 @@ func TestPrePushHook(t *testing.T) {
 		t.Fatal("expected remote sha not to be empty")
 	}
 
-	fmt.Println("local", localSha1, "remote", remoteSha1)
+	scanbuf := bytes.NewBuffer(nil)
+	err = repo1.Scan(remoteSha1, localSha1, scanbuf)
+	if err != nil {
+		t.Error(err)
+	}
+
+	fmt.Println("scanned", scanbuf.String())
 
 	// @TODO test
 	// buf = bytes.NewBuffer(nil)

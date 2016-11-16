@@ -232,11 +232,11 @@ func (repo *Repository) Scan(left, right string, w io.Writer) (err error) {
 	return nil
 }
 
-//Clean turns a plain bytes from 'r' into encrypted, deduplicated and persisted chunks
+//Split turns a plain bytes from 'r' into encrypted, deduplicated and persisted chunks
 //while outputting keys for those chunks on writer 'w'. Chunks are written to a local chunk
 //space, pushing these to a remote store happens at a later time (pre-push hook) but a log
 //of key file blob hashes is kept to recognize them during a push.
-func (repo *Repository) Clean(r io.Reader, w io.Writer) (err error) {
+func (repo *Repository) Split(r io.Reader, w io.Writer) (err error) {
 	blob := bytes.NewBuffer(nil)
 	out := io.MultiWriter(w, blob)
 
@@ -309,10 +309,10 @@ func (repo *Repository) Clean(r io.Reader, w io.Writer) (err error) {
 	return nil
 }
 
-//Smudge turns a newline seperated list of chunk keys from 'r' and lazily fetches each
+//Combine turns a newline seperated list of chunk keys from 'r' and lazily fetches each
 //chunk from the local space - or if not present locally - from a remote store. Chunks
 //are then decrypted and combined in the original file and written to writer 'w'
-func (repo *Repository) Smudge(r io.Reader, w io.Writer) (err error) {
+func (repo *Repository) Combine(r io.Reader, w io.Writer) (err error) {
 	s := bufio.NewScanner(r)
 	for s.Scan() {
 

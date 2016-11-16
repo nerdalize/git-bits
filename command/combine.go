@@ -1,4 +1,4 @@
-package gitcommand
+package command
 
 import (
 	"fmt"
@@ -8,12 +8,12 @@ import (
 	"github.com/nerdalize/git-bits/bits"
 )
 
-type Smudge struct {
+type Combine struct {
 	ui cli.Ui
 }
 
-func NewSmudge() (cmd cli.Command, err error) {
-	return &Smudge{
+func NewCombine() (cmd cli.Command, err error) {
+	return &Combine{
 		ui: &cli.BasicUi{
 			Reader:      os.Stdin,
 			Writer:      os.Stderr,
@@ -25,7 +25,7 @@ func NewSmudge() (cmd cli.Command, err error) {
 // Help returns long-form help text that includes the command-line
 // usage, a brief few sentences explaining the function of the command,
 // and the complete list of flags the command accepts.
-func (cmd *Smudge) Help() string {
+func (cmd *Combine) Help() string {
 	return fmt.Sprintf(`
   %s
 `, cmd.Synopsis())
@@ -33,14 +33,14 @@ func (cmd *Smudge) Help() string {
 
 // Synopsis returns a one-line, short synopsis of the command.
 // This should be less than 50 characters ideally.
-func (cmd *Smudge) Synopsis() string {
+func (cmd *Combine) Synopsis() string {
 	return "combine chunks back into the original file"
 }
 
 // Run runs the actual command with the given CLI instance and
 // command-line arguments. It returns the exit status when it is
 // finished.
-func (cmd *Smudge) Run(args []string) int {
+func (cmd *Combine) Run(args []string) int {
 	wd, err := os.Getwd()
 	if err != nil {
 		cmd.ui.Error(fmt.Sprintf("Failed to get working directory: %v", err))
@@ -53,7 +53,7 @@ func (cmd *Smudge) Run(args []string) int {
 		return 2
 	}
 
-	err = repo.Smudge(os.Stdin, os.Stdout)
+	err = repo.Combine(os.Stdin, os.Stdout)
 	if err != nil {
 		cmd.ui.Error(fmt.Sprintf("failed to smudge: %v", err))
 		return 3
