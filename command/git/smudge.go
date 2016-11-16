@@ -33,7 +33,9 @@ func (cmd *Smudge) Help() string {
 
 // Synopsis returns a one-line, short synopsis of the command.
 // This should be less than 50 characters ideally.
-func (cmd *Smudge) Synopsis() string { return "..." }
+func (cmd *Smudge) Synopsis() string {
+	return "combine chunks back into the original file"
+}
 
 // Run runs the actual command with the given CLI instance and
 // command-line arguments. It returns the exit status when it is
@@ -47,13 +49,13 @@ func (cmd *Smudge) Run(args []string) int {
 
 	repo, err := bits.NewRepository(wd)
 	if err != nil {
-		cmd.ui.Error(fmt.Sprintf("Failed to setup repository: %v", err))
+		cmd.ui.Error(fmt.Sprintf("failed to setup repository: %v", err))
 		return 2
 	}
 
 	err = repo.Smudge(os.Stdin, os.Stdout)
 	if err != nil {
-		cmd.ui.Error(fmt.Sprintf("Failed to smudge: %v", err))
+		cmd.ui.Error(fmt.Sprintf("failed to smudge: %v", err))
 		return 3
 	}
 

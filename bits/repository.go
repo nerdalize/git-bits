@@ -121,11 +121,20 @@ func (repo *Repository) Scan(left, right string, w io.Writer) (err error) {
 	r4, w4 := io.Pipe()
 	r5, w5 := io.Pipe()
 
+	errs := []string{}
+	errCh := make(chan error)
+	defer close(errCh)
+	go func() {
+		for err := range errCh {
+			errs = append(errs, fmt.Sprintf("%v", err))
+		}
+	}()
+
 	go func() {
 		defer w1.Close()
 		err = repo.Git(ctx, nil, w1, "rev-list", "--objects", right, "^"+left)
 		if err != nil {
-			//@TODO report error
+			errCh <- err
 		}
 	}()
 
@@ -142,7 +151,7 @@ func (repo *Repository) Scan(left, right string, w io.Writer) (err error) {
 		}
 
 		if err = s.Err(); err != nil {
-			//@TODO report
+			errCh <- err
 		}
 	}()
 
@@ -150,7 +159,7 @@ func (repo *Repository) Scan(left, right string, w io.Writer) (err error) {
 		defer w3.Close()
 		err = repo.Git(ctx, r2, w3, "cat-file", "--batch-check")
 		if err != nil {
-			//@TODO report error
+			errCh <- err
 		}
 	}()
 
@@ -168,7 +177,7 @@ func (repo *Repository) Scan(left, right string, w io.Writer) (err error) {
 			//parse object size for filtering by blob size
 			objSize, err := strconv.ParseInt(string(fields[2]), 10, 64)
 			if err != nil {
-				//@TODO report err/warning
+				errCh <- err
 				continue
 			}
 
@@ -182,7 +191,7 @@ func (repo *Repository) Scan(left, right string, w io.Writer) (err error) {
 		}
 
 		if err = s.Err(); err != nil {
-			//@TODO report
+			errCh <- err
 		}
 	}()
 
@@ -190,7 +199,7 @@ func (repo *Repository) Scan(left, right string, w io.Writer) (err error) {
 		defer w5.Close()
 		err = repo.Git(ctx, r4, w5, "cat-file", "--batch")
 		if err != nil {
-			//@TODO report error
+			errCh <- err
 		}
 	}()
 
@@ -214,6 +223,10 @@ func (repo *Repository) Scan(left, right string, w io.Writer) (err error) {
 
 	if err = s.Err(); err != nil {
 		return fmt.Errorf("failed to scan key blobs: %v", err)
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("there were scanning errors: \n %s", strings.Join(errs, "\n\t"))
 	}
 
 	return nil
@@ -352,93 +365,4 @@ func (repo *Repository) Smudge(r io.Reader, w io.Writer) (err error) {
 	}
 
 	return nil
-}
-
-//GetPushedKeys is a high level command that is used in the pre-push hook to
-//fetch all chunk keys that are being pushed by Git. The (still encoded) keys
-//are written to writer 'w'
-//
-// @TODO there are some issues here: 1) it currently involves doing an ERROR PRONE walking
-// of git objects with a method that may or may not actually walk all objects and
-// 2) while needing to large files into memory without knowing if they will be
-// of any use, git-lfs can cut off based on size, we CANNOT. 3) it ties push logic very
-// closely to git.
-func (repo *Repository) GetPushedKeys(ctx context.Context, localSha1 string, remoteSha1 string, w io.Writer) (err error) {
-	// objs := bytes.NewBuffer(nil)
-	// err = r.Git(ctx, nil, objs, "rev-list", "--objects", "--all", localSha1, "^"+remoteSha1)
-	// if err != nil {
-	// 	return fmt.Errorf("failed to list pushed objects: %v", err)
-	// }
-	//
-	// objSha1s := bytes.NewBuffer(nil)
-	// scanner := bufio.NewScanner(objs)
-	// for scanner.Scan() {
-	// 	fields := bytes.Fields(scanner.Bytes())
-	// 	if len(fields) < 1 {
-	// 		return fmt.Errorf("unexpected rev-list line '%s': expected at least 1 fields", string(scanner.Text()))
-	// 	}
-	//
-	// 	_, err = objSha1s.Write(fields[0])
-	// 	_, err = objSha1s.WriteString("\n")
-	// 	if err != nil {
-	// 		return fmt.Errorf("failed to write object sha to buffer: %v", err)
-	// 	}
-	// }
-	//
-	// if err = scanner.Err(); err != nil {
-	// 	return fmt.Errorf("failed to scan rev-list output: %v", err)
-	// }
-	//
-	// checks := bytes.NewBuffer(nil)
-	// err = r.Git(ctx, objSha1s, checks, "cat-file", "--batch-check")
-	// if err != nil {
-	// 	return fmt.Errorf("failed to list pushed objects: %v", err)
-	// }
-	//
-	// blobs := bytes.NewBuffer(nil)
-	// scanner = bufio.NewScanner(checks)
-	// for scanner.Scan() {
-	// 	fields := bytes.Fields(scanner.Bytes())
-	// 	if len(fields) < 3 {
-	// 		return fmt.Errorf("unexpected cat-file line '%s': expected at least 3 fields", string(scanner.Text()))
-	// 	}
-	//
-	// 	if !bytes.Equal(fields[1], []byte("blob")) {
-	// 		continue
-	// 	}
-	//
-	// 	objSize, err := strconv.ParseInt(string(fields[2]), 10, 64)
-	// 	if err != nil {
-	// 		return fmt.Errorf("unexpected size from cat-file could not parsed as int: %v", err)
-	// 	}
-	//
-	// 	//objects smaller then 32 bytes cannot contain hashes
-	// 	if objSize < 32 {
-	// 		continue
-	// 	}
-	//
-	// 	//index files are always a set of newline seperated 32byte hashes,
-	// 	//as such the object size must be multitude of 33 bytes this isnt very
-	// 	//flexible but should prevent most blobs from being loaded into memory
-	// 	//
-	// 	//@TODO this isnt very flexible. INSTEAD read from the keys log file
-	// 	//that is build up during clean/smudge to see what objects made it into
-	// 	//the git database.
-	// 	if objSize > 0 && objSize%33 != 0 {
-	// 		continue
-	// 	}
-	//
-	// 	fmt.Println(scanner.Text())
-	// 	_, err = blobs.Write(fields[0])
-	// 	_, err = blobs.WriteString("\n")
-	// 	if err != nil {
-	// 		return fmt.Errorf("failed to write blob sha to buffer: %v", err)
-	// 	}
-	// }
-	//
-	// if err = scanner.Err(); err != nil {
-	// 	return fmt.Errorf("failed to scan for blob objects: %v", err)
-	// }
-
-	return fmt.Errorf("not yet implemented")
 }

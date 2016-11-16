@@ -18,9 +18,9 @@ func main() {
 	c := cli.NewCLI(name, version)
 	c.Args = os.Args[1:]
 	c.Commands = map[string]cli.CommandFactory{
-		"git prepush": gitcommand.NewPrePush,
-		"git clean":   gitcommand.NewClean,
-		"git smudge":  gitcommand.NewSmudge,
+		"git scan":   gitcommand.NewScan,
+		"git clean":  gitcommand.NewClean,
+		"git smudge": gitcommand.NewSmudge,
 	}
 
 	status, err := c.Run()
