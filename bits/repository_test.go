@@ -130,7 +130,7 @@ func TestNewRepository(t *testing.T) {
 	}
 }
 
-func TestCleanSmudgeFilter(t *testing.T) {
+func TestSplitCombineScan(t *testing.T) {
 	ctx := context.Background()
 	ctx, _ = context.WithTimeout(ctx, time.Second*10)
 
@@ -239,12 +239,22 @@ func TestPrePushHook(t *testing.T) {
 	remote1 := GitInitRemote(t)
 	wd1, repo1 := GitCloneWorkspace(remote1, t)
 
+	WriteGitAttrFile(t, wd1, map[string]string{
+		"*.bin": "filter=bits",
+	})
+
+	GitConfigure(t, ctx, repo1, map[string]string{
+		"filter.bits.clean":    "git bits split",
+		"filter.bits.smudge":   "git bits combine",
+		"filter.bits.required": "true",
+	})
+
 	f1, err := os.Create(filepath.Join(wd1, "file_a.bin"))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	fsize := 33
+	fsize := 5 * 1024 * 1024
 	randr := io.LimitReader(rand.Reader, int64(fsize))
 	_, err = io.Copy(f1, randr)
 	if err != nil {

@@ -203,6 +203,7 @@ func (repo *Repository) Scan(left, right string, w io.Writer) (err error) {
 		}
 	}()
 
+	scanned := map[string]struct{}{}
 	recording := false
 	s := bufio.NewScanner(r5)
 	for s.Scan() {
@@ -216,8 +217,13 @@ func (repo *Repository) Scan(left, right string, w io.Writer) (err error) {
 			continue
 		}
 
+		//if we found keys, output each key on a new line
+		//but only if we didn't see it yet
 		if recording {
-			fmt.Fprintf(w, "%s\n", s.Text())
+			if _, ok := scanned[s.Text()]; !ok {
+				fmt.Fprintf(w, "%s\n", s.Text())
+				scanned[s.Text()] = struct{}{}
+			}
 		}
 	}
 
