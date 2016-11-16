@@ -117,6 +117,14 @@ func (repo *Repository) Git(ctx context.Context, in io.Reader, out io.Writer, ar
 	return nil
 }
 
+//Initializes a repository for git bits
+// configure filter
+// install hook
+// replace pointers?
+func (repo *Repository) Init() (err error) {
+	return nil
+}
+
 //Push takes a list of chunk keys on reader 'r' and moves each chunk from
 //the local storage to the remote store with name 'remote'.
 func (repo *Repository) Push(r io.Reader, remoteName string) (err error) {
@@ -368,15 +376,28 @@ func (repo *Repository) Scan(left, right string, w io.Writer) (err error) {
 //space, pushing these to a remote store happens at a later time (pre-push hook) but a log
 //of key file blob hashes is kept to recognize them during a push.
 func (repo *Repository) Split(r io.Reader, w io.Writer) (err error) {
-	blob := bytes.NewBuffer(nil)
-	out := io.MultiWriter(w, blob)
 
-	//write header and footer
-	out.Write(repo.header)
-	defer out.Write(repo.footer)
+	//create a buffer that allows us to peek if this is a file that
+	//is already spit, simply copy over the bytes
+	bufr := bufio.NewReader(r)
+	hdr, _ := bufr.Peek(hex.EncodedLen(KeySize) + 1)
+	if bytes.Equal(hdr, repo.header) {
+		//@TODO unit test this
+		_, err := io.Copy(w, bufr)
+		if err != nil {
+			return fmt.Errorf("failed to copy already chunked file content: %v", err)
+		}
+
+		return nil
+	}
+
+	//it is a feel that needs splitting, start
+	//writing header and footer
+	w.Write(repo.header)
+	defer w.Write(repo.footer)
 
 	//write actual chunks
-	chunkr := chunker.New(r, ChunkPolynomial)
+	chunkr := chunker.New(bufr, ChunkPolynomial)
 	buf := make([]byte, ChunkBufferSize)
 	for {
 		chunk, err := chunkr.Next(buf)
@@ -390,7 +411,7 @@ func (repo *Repository) Split(r io.Reader, w io.Writer) (err error) {
 
 		k := sha256.Sum256(chunk.Data)
 		printk := func(k K) error {
-			_, err = fmt.Fprintf(out, "%x\n", k)
+			_, err = fmt.Fprintf(w, "%x\n", k)
 			if err != nil {
 				return fmt.Errorf("failed to write key to output: %v", err)
 			}

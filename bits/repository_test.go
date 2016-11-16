@@ -231,9 +231,9 @@ func TestSplitCombineScan(t *testing.T) {
 	}
 }
 
-func TestPrePushHook(t *testing.T) {
+func TestPushFetch(t *testing.T) {
 	ctx := context.Background()
-	ctx, _ = context.WithTimeout(ctx, time.Second*10)
+	ctx, _ = context.WithTimeout(ctx, time.Second*30)
 
 	remote1 := GitInitRemote(t)
 	wd1, repo1 := GitCloneWorkspace(remote1, t)
@@ -327,13 +327,15 @@ func TestPrePushHook(t *testing.T) {
 		t.Error(err)
 	}
 
-	fmt.Println("scanned", scanbuf.String())
+	wd2, repo2 := GitCloneWorkspace(remote1, t)
+	WriteGitAttrFile(t, wd2, map[string]string{
+		"*.bin": "filter=bits",
+	})
 
-	// @TODO test
-	// buf = bytes.NewBuffer(nil)
-	// err = repo1.GetPushedKeys(ctx, localSha1, remoteSha1, buf)
-	// if err != nil {
-	// 	t.Error(err)
-	// }
+	GitConfigure(t, ctx, repo2, map[string]string{
+		"filter.bits.clean":    "git bits split",
+		"filter.bits.smudge":   "git bits combine",
+		"filter.bits.required": "true",
+	})
 
 }
