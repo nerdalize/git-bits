@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/restic/chunker"
@@ -40,8 +40,11 @@ type Repository struct {
 	//Git stderr from executions will be written here
 	errOutput io.Writer
 
-	//A internal database for storing chunk meta information
-	db *DB
+	//Header key allows us to recognize the start of a key listing
+	header []byte
+
+	//Footer Key allows us to recognize the end of a key listing
+	footer []byte
 }
 
 //NewRepository sets up an interface on top of a Git repository in the
@@ -74,10 +77,12 @@ func NewRepository(dir string) (repo *Repository, err error) {
 		return nil, fmt.Errorf("couldnt setup chunk directory at '%s': %v", repo.chunkDir, err)
 	}
 
-	logp := filepath.Join(repo.chunkDir, fmt.Sprintf("%x.cleaned", sha1.Sum([]byte(repo.chunkDir))))
-	repo.db, err = NewDB(logp)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open bits database at '%s': %v", logp, err)
+	//setup header and footers
+	repo.header = []byte("HEADER0000000000000000000000000000000000000000000000000000000000\n")
+	repo.footer = []byte("FOOTER0000000000000000000000000000000000000000000000000000000000\n")
+
+	if len(repo.header) != (hex.EncodedLen(KeySize)+1) || len(repo.footer) != (hex.EncodedLen(KeySize)+1) {
+		return nil, fmt.Errorf("repository header and footer size are not '%d': header: %d, footer: %d", hex.EncodedLen(KeySize)+1, len(repo.header), len(repo.footer))
 	}
 
 	return repo, nil
@@ -103,6 +108,117 @@ func (repo *Repository) Git(ctx context.Context, in io.Reader, out io.Writer, ar
 	return nil
 }
 
+//Scan will traverse git objects between commit 'left' and 'right', it will
+//look for blobs larger then 32 bytes that are also in the clean log. These
+//blobs should contain keys that are written to writer 'w'
+func (repo *Repository) Scan(left, right string, w io.Writer) (err error) {
+
+	// rev-list --objects <right> ^<left> | f1 | cat-file --batch-check | f2 | cat-file --batch | f3
+	ctx := context.Background()
+	r1, w1 := io.Pipe()
+	r2, w2 := io.Pipe()
+	r3, w3 := io.Pipe()
+	r4, w4 := io.Pipe()
+	r5, w5 := io.Pipe()
+
+	go func() {
+		defer w1.Close()
+		err = repo.Git(ctx, nil, w1, "rev-list", "--objects", right, "^"+left)
+		if err != nil {
+			//@TODO report error
+		}
+	}()
+
+	go func() {
+		defer w2.Close()
+		s := bufio.NewScanner(r1)
+		for s.Scan() {
+			fields := bytes.Fields(s.Bytes())
+			if len(fields) < 1 {
+				continue
+			}
+
+			fmt.Fprintf(w2, "%s\n", fields[0])
+		}
+
+		if err = s.Err(); err != nil {
+			//@TODO report
+		}
+	}()
+
+	go func() {
+		defer w3.Close()
+		err = repo.Git(ctx, r2, w3, "cat-file", "--batch-check")
+		if err != nil {
+			//@TODO report error
+		}
+	}()
+
+	go func() {
+		defer w4.Close()
+		s := bufio.NewScanner(r3)
+		for s.Scan() {
+			fields := bytes.Fields(s.Bytes())
+
+			//dont consider non-blobs
+			if len(fields) < 3 || !bytes.Equal(fields[1], []byte("blob")) {
+				continue
+			}
+
+			//parse object size for filtering by blob size
+			objSize, err := strconv.ParseInt(string(fields[2]), 10, 64)
+			if err != nil {
+				//@TODO report err/warning
+				continue
+			}
+
+			//all key files have a size that is the exact multiple of
+			//33 bytes: 32 bytes hex encoded hashes with a newline character
+			if objSize%int64(hex.EncodedLen(KeySize)+1) != 0 {
+				continue
+			}
+
+			fmt.Fprintf(w4, "%s\n", string(fields[0]))
+		}
+
+		if err = s.Err(); err != nil {
+			//@TODO report
+		}
+	}()
+
+	go func() {
+		defer w5.Close()
+		err = repo.Git(ctx, r4, w5, "cat-file", "--batch")
+		if err != nil {
+			//@TODO report error
+		}
+	}()
+
+	recording := false
+	s := bufio.NewScanner(r5)
+	for s.Scan() {
+		if bytes.Equal(s.Bytes(), repo.header[:len(repo.header)-1]) {
+			recording = true
+			continue
+		}
+
+		if bytes.Equal(s.Bytes(), repo.footer[:len(repo.footer)-1]) {
+			recording = false
+			continue
+		}
+
+		if recording {
+			fmt.Fprintf(w, "%s\n", s.Text())
+		}
+	}
+
+	if err = s.Err(); err != nil {
+		return fmt.Errorf("failed to scan key blobs: %v", err)
+	}
+
+	return nil
+}
+
 //Clean turns a plain bytes from 'r' into encrypted, deduplicated and persisted chunks
 //while outputting keys for those chunks on writer 'w'. Chunks are written to a local chunk
 //space, pushing these to a remote store happens at a later time (pre-push hook) but a log
@@ -111,7 +227,11 @@ func (repo *Repository) Clean(r io.Reader, w io.Writer) (err error) {
 	blob := bytes.NewBuffer(nil)
 	out := io.MultiWriter(w, blob)
 
-	//start chunking
+	//write header and footer
+	out.Write(repo.header)
+	defer out.Write(repo.footer)
+
+	//write actual chunks
 	chunkr := chunker.New(r, ChunkPolynomial)
 	buf := make([]byte, ChunkBufferSize)
 	for {
@@ -173,31 +293,6 @@ func (repo *Repository) Clean(r io.Reader, w io.Writer) (err error) {
 		}
 	}
 
-	//hash the blob with key as git would hash it
-	blobHash := sha1.New()
-	_, err = fmt.Fprintf(blobHash, "blob %d", blob.Len())
-	if err != nil {
-		return fmt.Errorf("failed to write keys for blob hash: %v", err)
-	}
-
-	_, err = blobHash.Write([]byte{0x00})
-	if err != nil {
-		return fmt.Errorf("failed to write keys for blob hash: %v", err)
-	}
-
-	_, err = io.Copy(blobHash, blob)
-	if err != nil {
-		return fmt.Errorf("failed to write keys for blob hash: %v", err)
-	}
-
-	//log each blob that ever resulted from a clean, this can later
-	//be used to figure out if a git object contains keys without looking
-	//at the blob content
-	err = repo.db.LogClean(blobHash.Sum(nil))
-	if err != nil {
-		return fmt.Errorf("failed to log clean: %v", err)
-	}
-
 	return nil
 }
 
@@ -207,6 +302,13 @@ func (repo *Repository) Clean(r io.Reader, w io.Writer) (err error) {
 func (repo *Repository) Smudge(r io.Reader, w io.Writer) (err error) {
 	s := bufio.NewScanner(r)
 	for s.Scan() {
+
+		//we skip header and footer lines
+		if bytes.Equal(s.Bytes(), repo.header[:len(repo.header)-1]) || bytes.Equal(s.Bytes(), repo.footer[:len(repo.footer)-1]) {
+			continue
+		}
+
+		//decode actual keys
 		data := make([]byte, hex.DecodedLen(len(s.Bytes())))
 		_, err = hex.Decode(data, s.Bytes())
 		if err != nil {
@@ -218,7 +320,7 @@ func (repo *Repository) Smudge(r io.Reader, w io.Writer) (err error) {
 			return fmt.Errorf("decoded chunk key '%x' has an invalid lenght %d, expected %d", data, len(data), len(k))
 		}
 
-		copy(k[:], data[:32])
+		copy(k[:], data[:KeySize])
 		err = func() error {
 
 			//open chunk file
@@ -237,7 +339,6 @@ func (repo *Repository) Smudge(r io.Reader, w io.Writer) (err error) {
 				return fmt.Errorf("failed to copy chunk '%x' content after %d bytes: %v", k, n, err)
 			}
 
-			fmt.Fprintf(os.Stderr, "key %x", k)
 			return nil
 		}()
 

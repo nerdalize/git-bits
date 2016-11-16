@@ -37,13 +37,15 @@ import (
 //
 // GitIndexStore<SharedIndexStore>.Push()
 
+const KeySize = 32
+
 //Chunks holds opaque binary data
 type Chunk []byte
 
 //K are 32-byte chunk keys, de-duplicated lookups and
 //convergent encryption setup assume this this to be
 //a (cryptographic) hash of plain-text chunk content
-type K [32]byte
+type K [KeySize]byte
 
 //CBC provides content-based chunking of data
 type CBC interface {

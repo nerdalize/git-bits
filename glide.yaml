@@ -6,5 +6,3 @@ import:
   version: bb2ecf9a98e35a0b336ffc23fc515fb6e7961577
 - package: github.com/rlmcpherson/s3gof3r           #fast s3 streaming access
   version: bc1aca74326ad100d0aa82bfa9ce6e9278620750
-- package: github.com/boltdb/bolt                   #pure go key/value store
-  version: 315c65d4cf4f5278c73477a35fb1f9b08365d340

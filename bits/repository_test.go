@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -113,7 +114,7 @@ func TestNewRepository(t *testing.T) {
 	if err == nil {
 		t.Errorf("creating repo in non-existing directory should fail")
 	} else {
-		if !strings.Contains(err.Error(), "no such file") {
+		if !strings.Contains(err.Error(), "workspace") {
 			t.Errorf("creating repo should fail with non existing dir error, got: %v", err)
 		}
 	}
@@ -138,7 +139,6 @@ func TestCleanSmudgeFilter(t *testing.T) {
 	remote1 := GitInitRemote(t)
 	wd1, repo1 := GitCloneWorkspace(remote1, t)
 
-	fmt.Println(wd1)
 	WriteGitAttrFile(t, wd1, map[string]string{
 		"*.bin": "filter=bits",
 	})
@@ -150,7 +150,7 @@ func TestCleanSmudgeFilter(t *testing.T) {
 	})
 
 	fpath := filepath.Join(wd1, "file1.bin")
-	f1 := WriteRandomFile(t, fpath, 2*1024*1024)
+	f1 := WriteRandomFile(t, fpath, 5*1024*1024)
 	f1.Close()
 
 	err := repo1.Git(ctx, nil, nil, "add", "-A")
@@ -163,12 +163,13 @@ func TestCleanSmudgeFilter(t *testing.T) {
 		t.Error(err)
 	}
 
-	c0 := bytes.NewBuffer(nil)
-	err = repo1.Git(ctx, nil, c0, "rev-parse", "HEAD")
+	c0buf := bytes.NewBuffer(nil)
+	err = repo1.Git(ctx, nil, c0buf, "rev-parse", "HEAD")
 	if err != nil {
 		t.Error(err)
 	}
 
+	c0 := strings.TrimSpace(c0buf.String())
 	originalContent := bytes.NewBuffer(nil)
 
 	f2, err := os.OpenFile(fpath, os.O_RDWR, 0666)
@@ -198,7 +199,15 @@ func TestCleanSmudgeFilter(t *testing.T) {
 		t.Error(err)
 	}
 
-	err = repo1.Git(ctx, nil, nil, "checkout", strings.TrimSpace(c0.String()))
+	c1buf := bytes.NewBuffer(nil)
+	err = repo1.Git(ctx, nil, c1buf, "rev-parse", "HEAD")
+	if err != nil {
+		t.Error(err)
+	}
+
+	c1 := strings.TrimSpace(c1buf.String())
+
+	err = repo1.Git(ctx, nil, nil, "checkout", c0)
 	if err != nil {
 		t.Error(err)
 	}
@@ -210,6 +219,16 @@ func TestCleanSmudgeFilter(t *testing.T) {
 
 	if !bytes.Equal(originalContent.Bytes(), newContent) {
 		t.Error("after checkout, file content should be equal to content before edit")
+	}
+
+	scanbuf := bytes.NewBuffer(nil)
+	err = repo1.Scan(c0, c1, scanbuf)
+	if err != nil {
+		t.Error(err)
+	}
+
+	if len(scanbuf.Bytes())%(hex.EncodedLen(bits.KeySize)+1) != 0 {
+		t.Errorf("expected a multitude keys to be returned but got: %s", scanbuf.String())
 	}
 }
 
