@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -645,9 +647,20 @@ func (repo *Repository) Split(r io.Reader, w io.Writer) (err error) {
 				return fmt.Errorf("Failed to open chunk file '%s' for writing: %v", p, err)
 			}
 
-			//write chunk file
+			//aes encryption with
+			block, err := aes.NewCipher(k[:])
+			if err != nil {
+				return fmt.Errorf("failed to create cipher for key '%x': %v", k, err)
+			}
+
+			//create encrypt writer
 			defer f.Close()
-			n, err := f.Write(chunk.Data)
+			var iv [aes.BlockSize]byte
+			stream := cipher.NewOFB(block, iv[:])
+			encryptw := &cipher.StreamWriter{S: stream, W: f}
+
+			//encrypt and write to file
+			n, err := encryptw.Write(chunk.Data)
 			if err != nil {
 				return fmt.Errorf("Failed to write chunk '%x' (wrote %d bytes): %v", k, n, err)
 			}
@@ -677,12 +690,20 @@ func (repo *Repository) Combine(r io.Reader, w io.Writer) (err error) {
 			return fmt.Errorf("failed to open chunk '%x' locally at '%s': %v", k, p, err)
 		}
 
-		//@TODO decrypt chunk
-		//@TODO verify chunk content
+		//setup aes cipher
+		block, err := aes.NewCipher(k[:])
+		if err != nil {
+			panic(err)
+		}
+
+		//setup the read stream
+		var iv [aes.BlockSize]byte
+		stream := cipher.NewOFB(block, iv[:])
+		encryptr := &cipher.StreamReader{S: stream, R: f}
 
 		//copy chunk bytes to output
 		defer f.Close()
-		n, err := io.Copy(w, f)
+		n, err := io.Copy(w, encryptr)
 		if err != nil {
 			return fmt.Errorf("failed to copy chunk '%x' content after %d bytes: %v", k, n, err)
 		}
