@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,6 +65,8 @@ func NewRepository(dir string) (repo *Repository, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to turn repository path '%s' into an absolute path: %v", dir, err)
 	}
+
+	//@TODO make sure this also works in a subdirectory of a git repo
 
 	//@TODO make this configurable
 	repo.errOutput = os.Stderr
@@ -306,6 +309,138 @@ func (repo *Repository) Path(k K, mkdir bool) (p string, err error) {
 	return filepath.Join(dir, fmt.Sprintf("%x", k[2:])), nil
 }
 
+//Pull will list all paths of blobs that hold chunk keys in the provided ref
+//and combine the chunks in them in to their oringal file, fetching any chunks
+//not currently available in the local store
+func (repo *Repository) Pull(ref string, w io.Writer) (err error) {
+
+	// rev-list --objects <ref> | f1 | cat-file --batch-check | f2
+	ctx := context.Background()
+	r1, w1 := io.Pipe()
+	r2, w2 := io.Pipe()
+
+	errs := []string{}
+	errCh := make(chan error)
+	defer close(errCh)
+	go func() {
+		for err := range errCh {
+			errs = append(errs, fmt.Sprintf("%v", err))
+		}
+	}()
+
+	go func() {
+		defer w1.Close()
+		err = repo.Git(ctx, nil, w1, "ls-tree", "-r", "-l", ref)
+		if err != nil {
+			errCh <- err
+		}
+	}()
+
+	go func() {
+		defer w2.Close()
+		s := bufio.NewScanner(r1)
+		for s.Scan() {
+			fields := bytes.Fields(s.Bytes())
+
+			if len(fields) < 5 || !bytes.Equal(fields[1], []byte("blob")) {
+				continue
+			}
+
+			objSize, err := strconv.ParseInt(string(fields[3]), 10, 64)
+			if err != nil {
+				errCh <- err
+				continue
+			}
+
+			//all key files have a size that is the exact multiple of
+			//33 bytes: 32 bytes hex encoded hashes with a newline character
+			if objSize%int64(hex.EncodedLen(KeySize)+1) != 0 {
+				continue
+			}
+
+			fmt.Fprintf(w2, "%s\n", fields[4])
+		}
+
+		if err = s.Err(); err != nil {
+			errCh <- err
+		}
+	}()
+
+	s := bufio.NewScanner(r2)
+	for s.Scan() {
+
+		err = func() error {
+			f, err := os.OpenFile(s.Text(), os.O_RDWR|os.O_CREATE, 0666)
+			if err != nil {
+				return err
+			}
+
+			defer f.Close()
+			hdr := make([]byte, hex.EncodedLen(KeySize))
+			_, err = f.Read(hdr)
+			if err != nil {
+				//if we cant even read a complete header, its not gonna contain chunks
+				return nil
+			}
+
+			offs, err := f.Seek(0, 0)
+			if err != nil || offs != 0 {
+				return fmt.Errorf("failed to seek files: %v", err)
+			}
+
+			if !bytes.Equal(hdr, repo.header[:len(repo.header)-1]) {
+				return nil
+			}
+
+			//We know its a chunks file that needs filling
+			ioutil.TempFile("", "bits_tmp_")
+			tmpf, err := os.Create(s.Text() + "_tmp")
+			if err != nil {
+				return err
+			}
+
+			pr, pw := io.Pipe()
+			go func() {
+				defer pw.Close()
+				err = repo.Fetch(f, pw)
+				if err != nil {
+					errCh <- err
+				}
+			}()
+
+			defer tmpf.Close()
+			err = repo.Combine(pr, tmpf)
+			if err != nil {
+				return fmt.Errorf("failed to combine: %v", err)
+			}
+
+			err = os.Remove(s.Text())
+			if err != nil {
+				return fmt.Errorf("failed to remove original chunk: %v", err)
+			}
+
+			err = os.Rename(tmpf.Name(), s.Text())
+			if err != nil {
+				return fmt.Errorf("failed to move '%s' to '%s'", tmpf.Name(), s.Text())
+			}
+
+			fmt.Fprintf(os.Stderr, "%s\n", string(s.Text()))
+
+			return nil
+		}()
+
+		if err != nil {
+			return fmt.Errorf("failed to check file '%s' for header content: %v", err)
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("there were scanning errors: \n %s", strings.Join(errs, "\n\t"))
+	}
+
+	return nil
+}
+
 //Scan will traverse git objects between commit 'left' and 'right', it will
 //look for blobs larger then 32 bytes that are also in the clean log. These
 //blobs should contain keys that are written to writer 'w'
@@ -360,7 +495,7 @@ func (repo *Repository) Scan(left, right string, w io.Writer) (err error) {
 
 	go func() {
 		defer w3.Close()
-		err = repo.Git(ctx, r2, w3, "cat-file", "--batch-check")
+		err = repo.Git(ctx, r2, w3, "cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize) %(rest)")
 		if err != nil {
 			errCh <- err
 		}

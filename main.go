@@ -21,6 +21,7 @@ func main() {
 		"scan":    command.NewScan,
 		"split":   command.NewSplit,
 		"fetch":   command.NewFetch,
+		"pull":    command.NewPull,
 		"push":    command.NewPush,
 		"combine": command.NewCombine,
 	}
