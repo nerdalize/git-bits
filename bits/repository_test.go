@@ -144,7 +144,7 @@ func TestSplitCombineScan(t *testing.T) {
 
 	GitConfigure(t, ctx, repo1, map[string]string{
 		"filter.bits.clean":    "git bits split",
-		"filter.bits.smudge":   "git bits combine",
+		"filter.bits.smudge":   "git bits fetch | git bits combine",
 		"filter.bits.required": "true",
 	})
 
@@ -243,7 +243,7 @@ func TestPushFetch(t *testing.T) {
 
 	GitConfigure(t, ctx, repo1, map[string]string{
 		"filter.bits.clean":    "git bits split",
-		"filter.bits.smudge":   "git bits combine",
+		"filter.bits.smudge":   "git bits fetch | git bits combine",
 		"filter.bits.required": "true",
 	})
 
@@ -334,7 +334,7 @@ func TestPushFetch(t *testing.T) {
 
 	GitConfigure(t, ctx, repo2, map[string]string{
 		"filter.bits.clean":    "git bits split",
-		"filter.bits.smudge":   "git bits combine",
+		"filter.bits.smudge":   "git bits fetch | git bits combine",
 		"filter.bits.required": "true",
 	})
 

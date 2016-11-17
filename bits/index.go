@@ -221,6 +221,8 @@ func (idx *Index) Pull(ctx context.Context) (err error) {
 			return fmt.Errorf("unexpected fetch error: %v", err)
 		}
 
+		fmt.Printf("a-b-c: %v", err)
+
 		//assume exist status 1 means we couldnt fast forward, FETCH_HEAD
 		//should contain a ref to the commit that was fetched, we continue
 		//with the creation of a custom commit that merges the current branch

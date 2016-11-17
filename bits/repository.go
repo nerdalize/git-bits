@@ -46,8 +46,8 @@ type Repository struct {
 	//Footer Key allows us to recognize the end of a key listing
 	footer []byte
 
-	//remotes hold the remote chunk stores we're using
-	remotes []Remote
+	//remotes hold the remote chunk store we're using
+	remote Remote
 }
 
 //NewRepository sets up an interface on top of a Git repository in the
@@ -88,12 +88,11 @@ func NewRepository(dir string) (repo *Repository, err error) {
 	}
 
 	//@TODO make "origin" remote configurable
-	def, err := NewS3Remote(repo, "origin")
+	repo.remote, err = NewS3Remote(repo, "origin")
 	if err != nil {
 		return nil, fmt.Errorf("unable to setup default chunk remote: %v", err)
 	}
 
-	repo.remotes = append(repo.remotes, def)
 	return repo, nil
 }
 
@@ -168,19 +167,18 @@ func (repo *Repository) ForEach(r io.Reader, fn func(K) error) error {
 //Push takes a list of chunk keys on reader 'r' and moves each chunk from
 //the local storage to the remote store with name 'remote'.
 func (repo *Repository) Push(r io.Reader, remoteName string) (err error) {
+	ctx := context.Background()
 
-	//get the remote we're interested in
-	var remote Remote
-	available := []string{}
-	for _, r := range repo.remotes {
-		available = append(available, r.Name())
-		if r.Name() == remoteName {
-			remote = r
-		}
-	}
+	//update the index
+	_ = repo.remote.Index().Pull(ctx)
+	//@TODO index pull might fail as the remote branch doesnt yet exist
+	// if err != nil {
+	// 	return fmt.Errorf("failed to pull remote index: %v", err)
+	// }
 
-	if remote == nil {
-		return fmt.Errorf("no remote in repository named '%s', available %v", remoteName, available)
+	err = repo.remote.Index().Load(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to load remote index: %v", err)
 	}
 
 	//scan for chunk keys
@@ -188,7 +186,7 @@ func (repo *Repository) Push(r io.Reader, remoteName string) (err error) {
 	err = repo.ForEach(r, func(k K) error {
 
 		//check if remote has the key
-		ok, err := remote.Index().Has(k)
+		ok, err := repo.remote.Index().Has(k)
 		if err != nil {
 			return fmt.Errorf("failed to check remote index: %v", err)
 		}
@@ -206,7 +204,7 @@ func (repo *Repository) Push(r io.Reader, remoteName string) (err error) {
 
 		//get remote writer
 		defer f.Close()
-		wc, err := remote.ChunkWriter(k)
+		wc, err := repo.remote.ChunkWriter(k)
 		if err != nil {
 			return fmt.Errorf("failed to get chunk writer: %v", err)
 		}
@@ -219,7 +217,7 @@ func (repo *Repository) Push(r io.Reader, remoteName string) (err error) {
 		}
 
 		//add key to remote index
-		err = remote.Index().Add(k)
+		err = repo.remote.Index().Add(k)
 		if err != nil {
 			return fmt.Errorf("failed to add key '%x' to remote index: %v", err)
 		}
@@ -237,13 +235,12 @@ func (repo *Repository) Push(r io.Reader, remoteName string) (err error) {
 	//if some new keys were indexed for the remote save
 	//and push the index for others to pull
 	if len(indexed) > 0 {
-		ctx := context.Background()
-		err = remote.Index().Save(ctx)
+		err = repo.remote.Index().Save(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to save index: %v", err)
 		}
 
-		err = remote.Index().Push(ctx)
+		err = repo.remote.Index().Push(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to push ined: %v", err)
 		}
@@ -252,30 +249,16 @@ func (repo *Repository) Push(r io.Reader, remoteName string) (err error) {
 	return nil
 }
 
-//Fetch takes a list of chunk keys on reader 'r' and will ask each
-//remote's index if the chunk is stored there. If it is move the chunk
-//to the local storage
-func (repo *Repository) Fetch(r io.Reader) (err error) {
+//Fetch takes a list of chunk keys on reader 'r' and will try to fetch chunks
+//that are not yet stored locally. Chunks that are already stored locally should
+//result in a no-op, all keys (fetched or not) will be written to 'w'.
+func (repo *Repository) Fetch(r io.Reader, w io.Writer) (err error) {
+	printk := func(k K) error {
+		_, err := fmt.Fprintf(w, "%x\n", k)
+		return err
+	}
+
 	return repo.ForEach(r, func(k K) error {
-		//@TODO actually test this
-
-		//find a remote that holds the key
-		var remote Remote
-		for _, r := range repo.remotes {
-			ok, err := r.Index().Has(k)
-			if err != nil {
-				//@TODO report
-			}
-
-			if ok {
-				remote = r
-				break
-			}
-		}
-
-		if remote == nil {
-			return fmt.Errorf("failed to find remote that holds key '%x'", k)
-		}
 
 		//setup chunk path
 		p, err := repo.Path(k, true)
@@ -287,13 +270,13 @@ func (repo *Repository) Fetch(r io.Reader) (err error) {
 		f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0666)
 		if err != nil {
 			if os.IsExist(err) {
-				return nil
+				return printk(k)
 			}
 
 			return fmt.Errorf("failed to open chunk file '%s' for writing: %v", p, err)
 		}
 
-		rc, err := remote.ChunkReader(k)
+		rc, err := repo.remote.ChunkReader(k)
 		if err != nil {
 			return fmt.Errorf("failed to get chunk reader for key '%x': %v", k, err)
 		}
@@ -304,7 +287,7 @@ func (repo *Repository) Fetch(r io.Reader) (err error) {
 			return fmt.Errorf("failed to clone chunk '%x' from remote: %v", err)
 		}
 
-		return nil
+		return printk(k)
 	})
 }
 
@@ -347,7 +330,12 @@ func (repo *Repository) Scan(left, right string, w io.Writer) (err error) {
 
 	go func() {
 		defer w1.Close()
-		err = repo.Git(ctx, nil, w1, "rev-list", "--objects", right, "^"+left)
+		args := []string{"rev-list", "--objects", right}
+		if left != "" {
+			args = append(args, "^"+left)
+		}
+
+		err = repo.Git(ctx, nil, w1, args...)
 		if err != nil {
 			errCh <- err
 		}
@@ -541,9 +529,9 @@ func (repo *Repository) Split(r io.Reader, w io.Writer) (err error) {
 	return nil
 }
 
-//Combine turns a newline seperated list of chunk keys from 'r' and lazily fetches each
-//chunk from the local space - or if not present locally - from a remote store. Chunks
-//are then decrypted and combined in the original file and written to writer 'w'
+//Combine turns a newline seperated list of chunk keys from 'r' by reading the the
+//projects local store. Chunks are then decrypted and combined in the original
+//file and written to writer 'w'
 func (repo *Repository) Combine(r io.Reader, w io.Writer) (err error) {
 	err = repo.ForEach(r, func(k K) error {
 
@@ -551,10 +539,7 @@ func (repo *Repository) Combine(r io.Reader, w io.Writer) (err error) {
 		p, _ := repo.Path(k, false)
 		f, err := os.OpenFile(p, os.O_RDONLY, 0666)
 		if err != nil {
-
-			//@TODO lookup at each remote and if the chunk is in its index fetch it and try again
-			//@TODO if initial lookup failed keep retrying to pull the index until a key is found somewhere
-			return fmt.Errorf("failed to open chunk '%x' at '%s': %v", k, p, err)
+			return fmt.Errorf("failed to open chunk '%x' locally at '%s': %v", k, p, err)
 		}
 
 		//@TODO decrypt chunk
