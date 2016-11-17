@@ -121,12 +121,26 @@ func (repo *Repository) Git(ctx context.Context, in io.Reader, out io.Writer, ar
 	return nil
 }
 
-//Initializes a repository for git bits
-// configure filter
-// install hook
-// replace pointers?
-func (repo *Repository) Init() (err error) {
-	return fmt.Errorf("not yet implemented")
+//Init will prepare a git repository for usage with git bits, it configures
+//filters, installs hooks and pulls chunks to write files in the current
+//working tree
+func (repo *Repository) Init(w io.Writer) (err error) {
+	ctx := context.Background()
+	conf := map[string]string{
+		"filter.bits.clean":    "git bits split",
+		"filter.bits.smudge":   "git bits fetch | git bits combine",
+		"filter.bits.required": "true",
+	}
+	for k, val := range conf {
+		err := repo.Git(ctx, nil, nil, "config", "--local", k, val)
+		if err != nil {
+			return fmt.Errorf("failed to configure filter: %v", err)
+		}
+	}
+
+	//@TODO install hooks
+
+	return repo.Pull("HEAD", w)
 }
 
 //ForEach is a convenient method for running logic for each chunk
@@ -589,8 +603,6 @@ func (repo *Repository) Split(r io.Reader, w io.Writer) (err error) {
 	bufr := bufio.NewReader(r)
 	hdr, _ := bufr.Peek(hex.EncodedLen(KeySize) + 1)
 	if bytes.Equal(hdr, repo.header) {
-
-		//@TODO unit test this
 		_, err := io.Copy(w, bufr)
 		if err != nil {
 			return fmt.Errorf("failed to copy already chunked file content: %v", err)
