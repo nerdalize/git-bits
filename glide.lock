@@ -1,10 +1,12 @@
-hash: f1e6cff3f7e0c670b68b8f0676dc63dac4fd9db5dc58eaa5c99d7112f0892c73
-updated: 2016-11-13T12:47:19.647129262+01:00
+hash: f45c0f353dadf6408eee8f5cdb1c516e5a21d977e6858d1770144b6ceda81e8a
+updated: 2016-11-15T12:41:50.818946553+01:00
 imports:
 - name: github.com/armon/go-radix
   version: 4239b77079c7b5d1243b7b4736304ce8ddb6f0f2
 - name: github.com/bgentry/speakeasy
   version: 675b82c74c0ed12283ee81ba8a534c8982c07b85
+- name: github.com/boltdb/bolt
+  version: 315c65d4cf4f5278c73477a35fb1f9b08365d340
 - name: github.com/mattn/go-isatty
   version: 66b8e73f3f5cda9f96b69efd03dd3d7fc4a5cdb8
 - name: github.com/mitchellh/cli
