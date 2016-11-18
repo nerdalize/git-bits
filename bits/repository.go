@@ -350,7 +350,7 @@ func (repo *Repository) Path(k K, mkdir bool) (p string, err error) {
 	return filepath.Join(dir, fmt.Sprintf("%x", k[2:])), nil
 }
 
-//Pull will list all paths of blobs that hold chunk keys in the provided ref
+//Pull get all file paths of blobs that hold chunk keys in the provided ref
 //and combine the chunks in them into their original file, fetching any chunks
 //not currently available in the local store
 func (repo *Repository) Pull(ref string, w io.Writer) (err error) {

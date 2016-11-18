@@ -34,7 +34,7 @@ func (cmd *Push) Help() string {
 // Synopsis returns a one-line, short synopsis of the command.
 // This should be less than 50 characters ideally.
 func (cmd *Push) Synopsis() string {
-	return "queries the git database for all chunk keys in blobs"
+	return "push locally stored chunks to the remote store"
 }
 
 // Run runs the actual command with the given CLI instance and

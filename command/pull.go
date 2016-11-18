@@ -34,7 +34,7 @@ func (cmd *Pull) Help() string {
 // Synopsis returns a one-line, short synopsis of the command.
 // This should be less than 50 characters ideally.
 func (cmd *Pull) Synopsis() string {
-	return "queries the git database for all chunk keys in blobs"
+	return "fetch chunks for split files in the working tree and combine"
 }
 
 // Run runs the actual command with the given CLI instance and
