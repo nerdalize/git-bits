@@ -6,3 +6,5 @@ import:
   version: bb2ecf9a98e35a0b336ffc23fc515fb6e7961577
 - package: github.com/rlmcpherson/s3gof3r           #fast s3 streaming access
   version: bc1aca74326ad100d0aa82bfa9ce6e9278620750
+- package: github.com/jessevdk/go-flags             #flexible flag parsing
+  version: 8bc97d602c3bfeb5fc6fc9b5a9c898f245495637
