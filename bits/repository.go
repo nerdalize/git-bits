@@ -40,6 +40,9 @@ type Repository struct {
 	//Path to the local chunk storage
 	chunkDir string
 
+	//Path to the root of the root of the git projet
+	rootDir string
+
 	//Git stderr from executions will be written here
 	errOutput io.Writer
 
@@ -77,6 +80,9 @@ func NewRepository(dir string) (repo *Repository, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("dir '%s' doesnt seem to be a git workspace:  %v", dir, err)
 	}
+
+	//@TODO make sure this is configured differently
+	repo.rootDir = repo.workDir
 
 	//@TODO make this configurable
 	repo.chunkDir = filepath.Join(repo.workDir, ".git", "chunks")
@@ -138,7 +144,26 @@ func (repo *Repository) Init(w io.Writer) (err error) {
 		}
 	}
 
-	//@TODO install hooks
+	hookp := filepath.Join(repo.workDir, ".git", "hooks", "pre-push")
+	f, err := os.OpenFile(hookp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0777)
+	if err != nil {
+		if os.IsExist(err) {
+			fmt.Fprintf(repo.errOutput, "a file already exists at '%s' already, skip writing git-bits hook\n", hookp)
+		} else {
+			return fmt.Errorf("couldnt setup hook: %v", err)
+		}
+	} else {
+		defer f.Close()
+		_, err = f.WriteString(`#/bin/sh
+			#!/bin/sh
+			command -v git-bits >/dev/null 2>&1 || { echo >&2 "This project was setup with git-bits but it can (no longer) be found in your PATH: $PATH."; exit 0; }
+			git-bits scan | git-bits push
+	`)
+
+		if err != nil {
+			return fmt.Errorf("failed to git hook: %v", err)
+		}
+	}
 
 	return repo.Pull("HEAD", w)
 }
@@ -326,7 +351,7 @@ func (repo *Repository) Path(k K, mkdir bool) (p string, err error) {
 }
 
 //Pull will list all paths of blobs that hold chunk keys in the provided ref
-//and combine the chunks in them in to their oringal file, fetching any chunks
+//and combine the chunks in them into their original file, fetching any chunks
 //not currently available in the local store
 func (repo *Repository) Pull(ref string, w io.Writer) (err error) {
 
@@ -384,9 +409,9 @@ func (repo *Repository) Pull(ref string, w io.Writer) (err error) {
 
 	s := bufio.NewScanner(r2)
 	for s.Scan() {
-
 		err = func() error {
-			f, err := os.OpenFile(s.Text(), os.O_RDWR|os.O_CREATE, 0666)
+			fpath := filepath.Join(repo.rootDir, s.Text())
+			f, err := os.OpenFile(fpath, os.O_RDWR|os.O_CREATE, 0666)
 			if err != nil {
 				return err
 			}
@@ -409,8 +434,7 @@ func (repo *Repository) Pull(ref string, w io.Writer) (err error) {
 			}
 
 			//We know its a chunks file that needs filling
-			ioutil.TempFile("", "bits_tmp_")
-			tmpf, err := os.Create(s.Text() + "_tmp")
+			tmpf, err := ioutil.TempFile("", "bits_tmp_")
 			if err != nil {
 				return err
 			}
@@ -430,18 +454,18 @@ func (repo *Repository) Pull(ref string, w io.Writer) (err error) {
 				return fmt.Errorf("failed to combine: %v", err)
 			}
 
-			err = os.Remove(s.Text())
+			err = os.Remove(fpath)
 			if err != nil {
 				return fmt.Errorf("failed to remove original chunk: %v", err)
 			}
 
-			err = os.Rename(tmpf.Name(), s.Text())
+			err = os.Rename(tmpf.Name(), fpath)
 			if err != nil {
 				return fmt.Errorf("failed to move '%s' to '%s'", tmpf.Name(), s.Text())
 			}
 
-			fmt.Fprintf(os.Stderr, "%s\n", string(s.Text()))
-
+			//@TODO remove tmp file?
+			//print something to stdout
 			return nil
 		}()
 
@@ -455,6 +479,35 @@ func (repo *Repository) Pull(ref string, w io.Writer) (err error) {
 	}
 
 	return nil
+}
+
+func (repo *Repository) ScanEach(r io.Reader, w io.Writer) (err error) {
+	s := bufio.NewScanner(r)
+	for s.Scan() {
+		fields := bytes.Fields(s.Bytes())
+		left := ""
+		right := ""
+
+		switch len(fields) {
+		case 4: //push hook format
+			right = string(fields[1])
+			left = string(fields[3])
+			if left == "0000000000000000000000000000000000000000" {
+				left = ""
+			}
+		case 1: //scan refs (left empty)
+			right = string(fields[0])
+		case 2: //scan refs
+			right = string(fields[0])
+			left = string(fields[1])
+		default: //error
+			return fmt.Errorf("unexpected input for scanning: %s", s.Text())
+		}
+
+		return repo.Scan(left, right, w)
+	}
+
+	return s.Err()
 }
 
 //Scan will traverse git objects between commit 'left' and 'right', it will

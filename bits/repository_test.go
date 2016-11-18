@@ -241,18 +241,17 @@ func TestPushFetch(t *testing.T) {
 		"*.bin": "filter=bits",
 	})
 
-	GitConfigure(t, ctx, repo1, map[string]string{
-		"filter.bits.clean":    "git bits split",
-		"filter.bits.smudge":   "git bits fetch | git bits combine",
-		"filter.bits.required": "true",
-	})
+	err := repo1.Init(os.Stderr)
+	if err != nil {
+		t.Error(err)
+	}
 
 	fsize := int64(5 * 1024 * 1024)
 	fpath := filepath.Join(wd1, "file_a.bin")
 	f1 := WriteRandomFile(t, fpath, fsize)
 	f1.Close()
 
-	err := repo1.Git(ctx, nil, nil, "add", "-A")
+	err = repo1.Git(ctx, nil, nil, "add", "-A")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,6 +261,7 @@ func TestPushFetch(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	//Push 1
 	err = repo1.Git(ctx, nil, nil, "push")
 	if err != nil {
 		t.Fatal(err)
@@ -293,38 +293,15 @@ func TestPushFetch(t *testing.T) {
 		}()
 	}
 
-	buf := bytes.NewBuffer(nil)
-	err = repo1.Git(ctx, nil, buf, "rev-parse", "HEAD")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	localSha1 := strings.TrimSpace(buf.String())
-	if localSha1 == "" {
-		t.Fatal("expected local sha not to be empty")
-	}
-
-	buf = bytes.NewBuffer(nil)
-	err = repo1.Git(ctx, nil, buf, "ls-remote", "origin", "HEAD")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	remoteRef := strings.Fields(buf.String())
-	remoteSha1 := strings.TrimSpace(remoteRef[0])
-	if remoteSha1 == "" {
-		t.Fatal("expected remote sha not to be empty")
-	}
-
-	scanbuf := bytes.NewBuffer(nil)
-	err = repo1.Scan(remoteSha1, localSha1, scanbuf)
+	orgContent, err := ioutil.ReadFile(filepath.Join(wd1, "file_a.bin"))
 	if err != nil {
 		t.Error(err)
 	}
 
-	err = repo1.Push(scanbuf, "origin")
+	//Push 2
+	err = repo1.Git(ctx, nil, nil, "push")
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 
 	wd2, repo2 := GitCloneWorkspace(remote1, t)
@@ -332,10 +309,17 @@ func TestPushFetch(t *testing.T) {
 		"*.bin": "filter=bits",
 	})
 
-	GitConfigure(t, ctx, repo2, map[string]string{
-		"filter.bits.clean":    "git bits split",
-		"filter.bits.smudge":   "git bits fetch | git bits combine",
-		"filter.bits.required": "true",
-	})
+	err = repo2.Init(os.Stderr)
+	if err != nil {
+		t.Error(err)
+	}
 
+	newContent, err := ioutil.ReadFile(filepath.Join(wd2, "file_a.bin"))
+	if err != nil {
+		t.Error(err)
+	}
+
+	if !bytes.Equal(orgContent, newContent) {
+		t.Error("after clone and init, file content should be equal to content before edit")
+	}
 }

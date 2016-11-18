@@ -53,22 +53,28 @@ func (cmd *Scan) Run(args []string) int {
 		return 2
 	}
 
-	if len(args) < 1 {
-		cmd.ui.Error(fmt.Sprintf("expected at least 1 arguments, got: %v", args))
-		return 128
-	}
+	// if len(args) < 1 {
+	// 	cmd.ui.Error(fmt.Sprintf("expected at least 1 arguments, got: %v", args))
+	// 	return 128
+	// }
 
-	right := args[0]
-	left := ""
-	if len(args) > 1 {
-		left = args[1]
-	}
-
-	err = repo.Scan(left, right, os.Stdout)
+	err = repo.ScanEach(os.Stdin, os.Stdout)
 	if err != nil {
 		cmd.ui.Error(fmt.Sprintf("failed to scan: %v", err))
 		return 3
 	}
+
+	// right := args[0]
+	// left := ""
+	// if len(args) > 1 {
+	// 	left = args[1]
+	// }
+	//
+	// err = repo.Scan(left, right, os.Stdout)
+	// if err != nil {
+	// 	cmd.ui.Error(fmt.Sprintf("failed to scan: %v", err))
+	// 	return 3
+	// }
 
 	return 0
 }
