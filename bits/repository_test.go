@@ -50,7 +50,7 @@ func GitCloneWorkspace(remote string, t *testing.T) (dir string, repo *bits.Repo
 		t.Fatal(err)
 	}
 
-	repo, err = bits.NewRepository(dir)
+	repo, err = bits.NewRepository(dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,9 +87,10 @@ func BuildBinaryInPath(t *testing.T, ctx context.Context) {
 
 	cmd := exec.CommandContext(ctx, "go", "build", "-o", filepath.Join(gopath, "bin", "git-bits"))
 	cmd.Dir = filepath.Join(gopath, "src", "github.com", "nerdalize", "git-bits")
+	cmd.Stderr = os.Stderr
 	err := cmd.Run()
 	if err != nil {
-		t.Fatalf("failed to build git-bits, make sure this project is in $GOPATH/src/github.com/nerdalize/nerdalize: %v", err)
+		t.Fatalf("failed to build git-bits, make sure this project is in $GOPATH/src/github.com/nerdalize/git-bits: %v", err)
 	}
 
 }
@@ -110,21 +111,21 @@ func WriteRandomFile(t *testing.T, path string, size int64) (f *os.File) {
 }
 
 func TestNewRepository(t *testing.T) {
-	_, err := bits.NewRepository("/tmp/my-bogus-repo")
+	_, err := bits.NewRepository("/tmp/my-bogus-repo", nil)
 	if err == nil {
 		t.Errorf("creating repo in non-existing directory should fail")
 	} else {
-		if !strings.Contains(err.Error(), "workspace") {
+		if !strings.Contains(err.Error(), "git repository") {
 			t.Errorf("creating repo should fail with non existing dir error, got: %v", err)
 		}
 	}
 
 	tdir, _ := ioutil.TempDir("", "test_wdir_")
-	_, err = bits.NewRepository(tdir)
+	_, err = bits.NewRepository(tdir, nil)
 	if err == nil {
 		t.Errorf("creating repo in non-git directory should fail")
 	} else {
-		if !strings.Contains(err.Error(), "workspace") {
+		if !strings.Contains(err.Error(), "git repository") {
 			t.Errorf("creating repo should fail with exit code, got: %v", err)
 		}
 	}

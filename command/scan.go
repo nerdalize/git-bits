@@ -47,7 +47,7 @@ func (cmd *Scan) Run(args []string) int {
 		return 1
 	}
 
-	repo, err := bits.NewRepository(wd)
+	repo, err := bits.NewRepository(wd, os.Stderr)
 	if err != nil {
 		cmd.ui.Error(fmt.Sprintf("failed to setup repository: %v", err))
 		return 2

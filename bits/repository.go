@@ -34,8 +34,8 @@ type Repository struct {
 	//Path the to the Git executable we're usng
 	exe string
 
-	//Path to the Git workspace we're operating in
-	workDir string
+	//Path to the Git database directory (.git)
+	gitDir string
 
 	//Path to the local chunk storage
 	chunkDir string
@@ -43,8 +43,8 @@ type Repository struct {
 	//Path to the root of the root of the git projet
 	rootDir string
 
-	//Git stderr from executions will be written here
-	errOutput io.Writer
+	//stderr from executions will be written here
+	output io.Writer
 
 	//Header key allows us to recognize the start of a key listing
 	header []byte
@@ -59,41 +59,38 @@ type Repository struct {
 //NewRepository sets up an interface on top of a Git repository in the
 //provided directory. It will fail if the get executable is not in
 //the shells PATH or if the directory doesnt seem to be a Git repository
-func NewRepository(dir string) (repo *Repository, err error) {
+func NewRepository(dir string, output io.Writer) (repo *Repository, err error) {
 	repo = &Repository{}
 	repo.exe, err = exec.LookPath("git")
 	if err != nil {
 		return nil, fmt.Errorf("git executable couldn't be found in your PATH: %v, make sure git it installed", err)
 	}
 
+	//ask git for the root directory
 	repo.rootDir = dir
 	buf := bytes.NewBuffer(nil)
-	err = repo.Git(context.Background(), nil, buf, "rev-parse", "--show-toplevel")
+	err = repo.Git(nil, nil, buf, "rev-parse", "--show-toplevel")
 	repo.rootDir = strings.TrimSpace(buf.String())
 	if err != nil || repo.rootDir == "" {
 		return nil, fmt.Errorf("couldn't get git repo root, are you in a git repository?")
 	}
 
-	// repo.workDir, err = filepath.Abs(dir)
-	// if err != nil {
-	// 	return nil, fmt.Errorf("failed to turn repository path '%s' into an absolute path: %v", dir, err)
-	// }
-	//
-	// //@TODO make sure this also works in a subdirectory of a git repo
-	//
-	// //@TODO make this configurable
-	// repo.errOutput = os.Stderr
-	//
-	// _, err = os.Stat(filepath.Join(repo.workDir, ".git"))
-	// if err != nil {
-	// 	return nil, fmt.Errorf("dir '%s' doesnt seem to be a git workspace:  %v", dir, err)
-	// }
-	//
-	// //@TODO make sure this is configured differently
-	// repo.rootDir = repo.workDir
+	//we store the git directory seperately
+	buf = bytes.NewBuffer(nil)
+	err = repo.Git(nil, nil, buf, "rev-parse", "--git-dir")
+	repo.gitDir = filepath.Join(repo.rootDir, strings.TrimSpace(buf.String()))
+	if err != nil {
+		return nil, fmt.Errorf("couldn't get git directory, are you in a git repository?")
+	}
+
+	//make sure command output is visible
+	repo.output = output
+	if repo.output == nil {
+		repo.output = os.Stderr
+	}
 
 	//@TODO make this configurable
-	repo.chunkDir = filepath.Join(repo.workDir, ".git", "chunks")
+	repo.chunkDir = filepath.Join(repo.gitDir, "chunks")
 	err = os.MkdirAll(repo.chunkDir, 0777)
 	if err != nil {
 		return nil, fmt.Errorf("couldnt setup chunk directory at '%s': %v", repo.chunkDir, err)
@@ -134,8 +131,8 @@ func (repo *Repository) Git(ctx context.Context, in io.Reader, out io.Writer, ar
 	}
 
 	cmd := exec.CommandContext(ctx, repo.exe, args...)
-	cmd.Dir = repo.workDir
-	cmd.Stderr = repo.errOutput
+	cmd.Dir = repo.rootDir
+	cmd.Stderr = repo.output
 	cmd.Stdin = in
 	cmd.Stdout = out
 
@@ -174,11 +171,11 @@ func (repo *Repository) Init(w io.Writer, remote, bucket string) (err error) {
 		}
 	}
 
-	hookp := filepath.Join(repo.workDir, ".git", "hooks", "pre-push")
+	hookp := filepath.Join(repo.gitDir, "hooks", "pre-push")
 	f, err := os.OpenFile(hookp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0777)
 	if err != nil {
 		if os.IsExist(err) {
-			fmt.Fprintf(repo.errOutput, "a file already exists at '%s' already, skip writing git-bits hook\n", hookp)
+			fmt.Fprintf(repo.output, "a file already exists at '%s' already, skip writing git-bits hook\n", hookp)
 		} else {
 			return fmt.Errorf("couldnt setup hook: %v", err)
 		}
