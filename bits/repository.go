@@ -98,7 +98,19 @@ func NewRepository(dir string) (repo *Repository, err error) {
 		return nil, fmt.Errorf("repository header and footer size are not '%d': header: %d, footer: %d", hex.EncodedLen(KeySize)+1, len(repo.header), len(repo.footer))
 	}
 
-	//@TODO make "origin" remote configurable
+	//read configuration from
+	//@TODO how do we setup s3 credentials?
+	// buf := bytes.NewBuffer(nil)
+	// err = repo.Git(ctx, nil, buf, "config", fmt.Sprintf("remote.%s.chunk-bucket", "origin"))
+	// bucketName := strings.TrimSpace(buf.String())
+	// if err != nil {
+	// 	return fmt.Errorf("failed to get remote config: %v", err)
+	// }
+	//
+	// if bucketName == "" {
+	// 	return fmt.Errorf("no chunk-bucket configured for remote '%s'", remoteName)
+	// }
+
 	repo.remote, err = NewS3Remote(repo, "origin")
 	if err != nil {
 		return nil, fmt.Errorf("unable to setup default chunk remote: %v", err)
@@ -130,8 +142,10 @@ func (repo *Repository) Git(ctx context.Context, in io.Reader, out io.Writer, ar
 //Init will prepare a git repository for usage with git bits, it configures
 //filters, installs hooks and pulls chunks to write files in the current
 //working tree
-func (repo *Repository) Init(w io.Writer) (err error) {
+func (repo *Repository) Init(w io.Writer, remote, bucket string) (err error) {
 	ctx := context.Background()
+
+	//configure filter
 	conf := map[string]string{
 		"filter.bits.clean":    "git bits split",
 		"filter.bits.smudge":   "git bits fetch | git bits combine",
@@ -139,6 +153,14 @@ func (repo *Repository) Init(w io.Writer) (err error) {
 	}
 	for k, val := range conf {
 		err := repo.Git(ctx, nil, nil, "config", "--local", k, val)
+		if err != nil {
+			return fmt.Errorf("failed to configure filter: %v", err)
+		}
+	}
+
+	//configure the s3 bucket as part of the git remotes config
+	if bucket != "" && remote != "" {
+		err := repo.Git(ctx, nil, nil, "config", "--local", fmt.Sprintf("remote.%s.chunk-bucket", remote), bucket)
 		if err != nil {
 			return fmt.Errorf("failed to configure filter: %v", err)
 		}
@@ -212,6 +234,10 @@ func (repo *Repository) ForEach(r io.Reader, fn func(K) error) error {
 //the local storage to the remote store with name 'remote'.
 func (repo *Repository) Push(r io.Reader, remoteName string) (err error) {
 	ctx := context.Background()
+
+	if repo.remote == nil {
+		return fmt.Errorf("unable to push, no remote configured")
+	}
 
 	//update the index
 	_ = repo.remote.Index().Pull(ctx)

@@ -11,29 +11,11 @@ import (
 )
 
 var InitOpts struct {
-	//
-	Verbose []bool `short:"v" long:"verbose" description:"Show verbose debug information"`
+	// Name of the s3 bucket that will be configured for the remote
+	Bucket string `short:"b" long:"bucket" description:"name of the s3 bucket used as a chunk remote"`
 
-	// Example of automatic marshalling to desired type (uint)
-	Offset uint `long:"offset" description:"Offset"`
-
-	// Example of a callback, called each time the option is found.
-	Call func(string) `short:"c" description:"Call phone number"`
-
-	// Example of a value name
-	File string `short:"f" long:"file" description:"A file" value-name:"FILE"`
-
-	// Example of a pointer
-	Ptr *int `short:"p" description:"A pointer to an integer"`
-
-	// Example of a slice of strings
-	StringSlice []string `short:"s" description:"A slice of strings"`
-
-	// Example of a slice of pointers
-	PtrSlice []*string `long:"ptrslice" description:"A slice of pointers to string"`
-
-	// Example of a map
-	IntMap map[string]int `long:"intmap" description:"A map from string to int"`
+	// Chunk remote will be configured for configuration under this remote
+	Remote string `short:"r" long:"remote" default:"origin" required:"true" description:"git remote that will be configured for chunk storage (default=origin)"`
 }
 
 type Init struct {
@@ -66,8 +48,7 @@ func (cmd *Init) Help() string {
 	return fmt.Sprintf(`
   %s
 
-%s
-`, cmd.Synopsis(), buf.String())
+%s`, cmd.Synopsis(), buf.String())
 }
 
 // Synopsis returns a one-line, short synopsis of the command.
@@ -103,7 +84,7 @@ func (cmd *Init) Run(args []string) int {
 		return 3
 	}
 
-	err = repo.Init(os.Stdout)
+	err = repo.Init(os.Stdout, InitOpts.Remote, InitOpts.Bucket)
 	if err != nil {
 		cmd.ui.Error(fmt.Sprintf("failed to fetch: %v", err))
 		return 4

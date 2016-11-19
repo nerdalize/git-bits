@@ -241,7 +241,12 @@ func TestPushFetch(t *testing.T) {
 		"*.bin": "filter=bits",
 	})
 
-	err := repo1.Init(os.Stderr)
+	bucket := os.Getenv("TEST_BUCKET")
+	if bucket == "" {
+		t.Errorf("env TEST_BUCKET not configured")
+	}
+
+	err := repo1.Init(os.Stderr, "origin", bucket)
 	if err != nil {
 		t.Error(err)
 	}
@@ -309,7 +314,7 @@ func TestPushFetch(t *testing.T) {
 		"*.bin": "filter=bits",
 	})
 
-	err = repo2.Init(os.Stderr)
+	err = repo2.Init(os.Stderr, "origin", bucket)
 	if err != nil {
 		t.Error(err)
 	}
