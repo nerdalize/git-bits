@@ -89,7 +89,7 @@ func NewRepository(dir string, output io.Writer) (repo *Repository, err error) {
 		repo.output = os.Stderr
 	}
 
-	//@TODO make this configurable
+	//for now, store chunks in the .git directory
 	repo.chunkDir = filepath.Join(repo.gitDir, "chunks")
 	err = os.MkdirAll(repo.chunkDir, 0777)
 	if err != nil {
@@ -97,8 +97,8 @@ func NewRepository(dir string, output io.Writer) (repo *Repository, err error) {
 	}
 
 	//setup header and footers
-	repo.header = []byte("-------------------------CHUNKS_START---------------------------\n")
-	repo.footer = []byte("--------------------------CHUNKS_END----------------------------\n")
+	repo.header = []byte("--- to use this file decode it with the 'git-bits' extension ---\n")
+	repo.footer = []byte("----------------------- end of chunks --------------------------\n")
 	if len(repo.header) != (hex.EncodedLen(KeySize)+1) || len(repo.footer) != (hex.EncodedLen(KeySize)+1) {
 		return nil, fmt.Errorf("repository header and footer size are not '%d': header: %d, footer: %d", hex.EncodedLen(KeySize)+1, len(repo.header), len(repo.footer))
 	}
