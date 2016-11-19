@@ -66,23 +66,31 @@ func NewRepository(dir string) (repo *Repository, err error) {
 		return nil, fmt.Errorf("git executable couldn't be found in your PATH: %v, make sure git it installed", err)
 	}
 
-	repo.workDir, err = filepath.Abs(dir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to turn repository path '%s' into an absolute path: %v", dir, err)
+	repo.rootDir = dir
+	buf := bytes.NewBuffer(nil)
+	err = repo.Git(context.Background(), nil, buf, "rev-parse", "--show-toplevel")
+	repo.rootDir = strings.TrimSpace(buf.String())
+	if err != nil || repo.rootDir == "" {
+		return nil, fmt.Errorf("couldn't get git repo root, are you in a git repository?")
 	}
 
-	//@TODO make sure this also works in a subdirectory of a git repo
-
-	//@TODO make this configurable
-	repo.errOutput = os.Stderr
-
-	_, err = os.Stat(filepath.Join(repo.workDir, ".git"))
-	if err != nil {
-		return nil, fmt.Errorf("dir '%s' doesnt seem to be a git workspace:  %v", dir, err)
-	}
-
-	//@TODO make sure this is configured differently
-	repo.rootDir = repo.workDir
+	// repo.workDir, err = filepath.Abs(dir)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("failed to turn repository path '%s' into an absolute path: %v", dir, err)
+	// }
+	//
+	// //@TODO make sure this also works in a subdirectory of a git repo
+	//
+	// //@TODO make this configurable
+	// repo.errOutput = os.Stderr
+	//
+	// _, err = os.Stat(filepath.Join(repo.workDir, ".git"))
+	// if err != nil {
+	// 	return nil, fmt.Errorf("dir '%s' doesnt seem to be a git workspace:  %v", dir, err)
+	// }
+	//
+	// //@TODO make sure this is configured differently
+	// repo.rootDir = repo.workDir
 
 	//@TODO make this configurable
 	repo.chunkDir = filepath.Join(repo.workDir, ".git", "chunks")
