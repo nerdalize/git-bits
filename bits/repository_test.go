@@ -148,12 +148,6 @@ func TestSplitCombineScan(t *testing.T) {
 		t.Error(err)
 	}
 
-	// GitConfigure(t, ctx, repo1, map[string]string{
-	// 	"filter.bits.clean":    "git bits split",
-	// 	"filter.bits.smudge":   "git bits fetch | git bits combine",
-	// 	"filter.bits.required": "true",
-	// })
-
 	fpath := filepath.Join(wd1, "file1.bin")
 	f1 := WriteRandomFile(t, fpath, 5*1024*1024)
 	f1.Close()

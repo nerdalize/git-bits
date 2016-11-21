@@ -117,7 +117,13 @@ func NewRepository(dir string, output io.Writer) (repo *Repository, err error) {
 	if repo.conf.AWSS3BucketName != "" {
 		fmt.Fprintf(os.Stderr, "GOT some conf: %+v\n", repo.conf)
 
-		repo.remote, err = NewS3Remote(repo, "origin")
+		repo.remote, err = NewS3Remote(
+			repo,
+			"origin",
+			repo.conf.AWSS3BucketName,
+			repo.conf.AWSAccessKeyID,
+			repo.conf.AWSSecretAccessKey,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("unable to setup default chunk remote: %v", err)
 		}
@@ -185,7 +191,13 @@ func (repo *Repository) Init(w io.Writer, conf *Conf) (err error) {
 
 		//@TODO init can complete remote configuration
 		//@TODO obvious code duplication with constructor
-		repo.remote, err = NewS3Remote(repo, "origin")
+		repo.remote, err = NewS3Remote(
+			repo,
+			"origin",
+			repo.conf.AWSS3BucketName,
+			repo.conf.AWSAccessKeyID,
+			repo.conf.AWSSecretAccessKey,
+		)
 		if err != nil {
 			return fmt.Errorf("unable to setup default chunk remote: %v", err)
 		}
