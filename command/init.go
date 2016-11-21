@@ -85,6 +85,23 @@ func (cmd *Init) Run(args []string) int {
 	}
 
 	conf := bits.DefaultConf()
+	conf.AWSS3BucketName, err = cmd.ui.Ask("In which AWS S3 bucket would you like to store chunks? \n")
+	if err != nil {
+		cmd.ui.Error(fmt.Sprintf("failed to get input: %v", err))
+		return 128
+	}
+
+	conf.AWSAccessKeyID, err = cmd.ui.Ask("What is your AWS Access Key ID with list, read and write access to the above bucket? \n")
+	if err != nil {
+		cmd.ui.Error(fmt.Sprintf("failed to get input: %v", err))
+		return 128
+	}
+
+	conf.AWSSecretAccessKey, err = cmd.ui.AskSecret("What is your AWS Secret Key that autorizes the above access key? (input will be hidden)\n")
+	if err != nil {
+		cmd.ui.Error(fmt.Sprintf("failed to get input: %v", err))
+		return 128
+	}
 
 	err = repo.Init(os.Stdout, conf)
 	if err != nil {

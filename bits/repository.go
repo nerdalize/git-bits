@@ -290,6 +290,7 @@ func (repo *Repository) Push(r io.Reader, remoteName string) (err error) {
 	}()
 
 	//stream remote keys 500 at a time and write to local chunk store
+	//@TODO research http://stackoverflow.com/questions/495161/fast-disk-based-hashtables
 	err = repo.ForEach(pr, func(k K) error {
 		rp, err := repo.Path(k, true, true)
 		if err != nil {
@@ -847,7 +848,7 @@ func (repo *Repository) Combine(r io.Reader, w io.Writer) (err error) {
 		//setup aes cipher
 		block, err := aes.NewCipher(k[:])
 		if err != nil {
-			panic(err)
+			return fmt.Errorf("failed to create cipher: %v", err)
 		}
 
 		//setup the read stream
