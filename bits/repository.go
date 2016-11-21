@@ -31,7 +31,7 @@ var (
 //Repository provides an abstraction on top of a Git repository for a
 //certain directory that is queried by git commands
 type Repository struct {
-	//Path the to the Git executable we're usng
+	//Path the to the Git executable we're using
 	exe string
 
 	//Path to the Git database directory (.git)
@@ -115,8 +115,6 @@ func NewRepository(dir string, output io.Writer) (repo *Repository, err error) {
 
 	//if a bucket is configured we will attempt to configured
 	if repo.conf.AWSS3BucketName != "" {
-		fmt.Fprintf(os.Stderr, "GOT some conf: %+v\n", repo.conf)
-
 		repo.remote, err = NewS3Remote(
 			repo,
 			"origin",
@@ -124,12 +122,10 @@ func NewRepository(dir string, output io.Writer) (repo *Repository, err error) {
 			repo.conf.AWSAccessKeyID,
 			repo.conf.AWSSecretAccessKey,
 		)
-		if err != nil {
-			return nil, fmt.Errorf("unable to setup default chunk remote: %v", err)
-		}
 
-	} else {
-		fmt.Fprintf(os.Stderr, "GOT NO conf: %+v\n", repo.conf)
+		if err != nil {
+			return nil, fmt.Errorf("unable to setup chunk remote: %v", err)
+		}
 	}
 
 	return repo, nil
@@ -237,7 +233,7 @@ func (repo *Repository) Init(w io.Writer, conf *Conf) (err error) {
 }
 
 //ForEach is a convenient method for running logic for each chunk
-//key in stream 'r', it will automatically skip the chunk header and footer
+//key in stream 'r', it will skip the chunk header and footer
 func (repo *Repository) ForEach(r io.Reader, fn func(K) error) error {
 	s := bufio.NewScanner(r)
 	for s.Scan() {
@@ -279,40 +275,73 @@ func (repo *Repository) ForEach(r io.Reader, fn func(K) error) error {
 //Push takes a list of chunk keys on reader 'r' and moves each chunk from
 //the local storage to the remote store with name 'remote'.
 func (repo *Repository) Push(r io.Reader, remoteName string) (err error) {
-	ctx := context.Background()
-
 	if repo.remote == nil {
 		return fmt.Errorf("unable to push, no remote configured")
 	}
 
-	//update the index
-	_ = repo.remote.Index().Pull(ctx)
-	//@TODO index pull might fail as the remote branch doesnt yet exist
-	// if err != nil {
-	// 	return fmt.Errorf("failed to pull remote index: %v", err)
-	// }
+	//ask the remote to fetch all chunk keys
+	pr, pw := io.Pipe()
+	go func() {
+		err = repo.remote.ListChunks(pw)
+		defer pw.Close()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "k err %s", err)
+		}
+	}()
 
-	err = repo.remote.Index().Load(ctx)
+	//stream remote keys 500 at a time and write to local chunk store
+	err = repo.ForEach(pr, func(k K) error {
+		rp, err := repo.Path(k, true, true)
+		if err != nil {
+			return fmt.Errorf("failed to create repo file for '%x': %v", k, err)
+		}
+
+		rf, err := os.OpenFile(rp, os.O_CREATE|os.O_EXCL, 0777)
+		if err != nil {
+			if os.IsExist(err) {
+				return nil //index file already exists
+			}
+
+			return fmt.Errorf("failed to write remote file index for '%x': %v", k, err)
+		}
+
+		return rf.Close()
+	})
+
 	if err != nil {
-		return fmt.Errorf("failed to load remote index: %v", err)
+		return fmt.Errorf("failed to scan remote keys: %v", err)
 	}
 
 	//scan for chunk keys
-	indexed := []K{}
-	err = repo.ForEach(r, func(k K) error {
+	err = repo.ForEach(r, func(k K) (ferr error) {
 
-		//check if remote has the key
-		ok, err := repo.remote.Index().Has(k)
+		//the .r file indicates the remote has this chunk
+		rp, err := repo.Path(k, true, true)
 		if err != nil {
-			return fmt.Errorf("failed to check remote index: %v", err)
+			return fmt.Errorf("failed to create repo file for '%x': %v", k, err)
 		}
 
-		if ok {
-			return nil //skip push
+		//attempt to open the rp, if it already exists we can skip this
+		rf, err := os.OpenFile(rp, os.O_CREATE|os.O_EXCL, 0777)
+		if err != nil {
+			if os.IsExist(err) {
+				return nil //index file already exists, we can skip push, yeey
+			}
+
+			return fmt.Errorf("failed to write remote file for '%x': %v", k, err)
 		}
+
+		//always close the remote file, but if anything below fails,
+		//dont consider the chunk to be pushed and remove .r file
+		defer rf.Close()
+		defer func() {
+			if ferr != nil {
+				ferr = os.Remove(rp)
+			}
+		}()
 
 		//open local chunk file
-		p, _ := repo.Path(k, false)
+		p, _ := repo.Path(k, false, false)
 		f, err := os.OpenFile(p, os.O_RDONLY, 0666)
 		if err != nil {
 			return fmt.Errorf("failed to open chunk '%x' at '%s' for pushing: %v", k, p, err)
@@ -332,34 +361,11 @@ func (repo *Repository) Push(r io.Reader, remoteName string) (err error) {
 			return fmt.Errorf("failed to copy file '%s' to remote writer after %d bytes: %v", f.Name(), n, err)
 		}
 
-		//add key to remote index
-		err = repo.remote.Index().Add(k)
-		if err != nil {
-			return fmt.Errorf("failed to add key '%x' to remote index: %v", err)
-		}
-
-		//record number of newly indexed keys
-		indexed = append(indexed, k)
 		return nil
-
 	})
 
 	if err != nil {
 		return fmt.Errorf("failed to loop over each key: %v", err)
-	}
-
-	//if some new keys were indexed for the remote save
-	//and push the index for others to pull
-	if len(indexed) > 0 {
-		err = repo.remote.Index().Save(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to save index: %v", err)
-		}
-
-		err = repo.remote.Index().Push(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to push ined: %v", err)
-		}
 	}
 
 	return nil
@@ -377,7 +383,7 @@ func (repo *Repository) Fetch(r io.Reader, w io.Writer) (err error) {
 	return repo.ForEach(r, func(k K) error {
 
 		//setup chunk path
-		p, err := repo.Path(k, true)
+		p, err := repo.Path(k, true, false)
 		if err != nil {
 			return fmt.Errorf("failed to create chunk path for key '%x': %v", k, err)
 		}
@@ -393,7 +399,7 @@ func (repo *Repository) Fetch(r io.Reader, w io.Writer) (err error) {
 		}
 
 		if repo.remote == nil {
-			return fmt.Errorf("key '%x' is stored locally, and no remote is configured!", k)
+			return fmt.Errorf("key '%x' isn't stored locally, but no remote is configured", k)
 		}
 
 		rc, err := repo.remote.ChunkReader(k)
@@ -413,14 +419,19 @@ func (repo *Repository) Fetch(r io.Reader, w io.Writer) (err error) {
 
 //Path returns the local path to the chunk file based on the key, it can
 //create required directories when 'mkdir' is set to true, in that case
-//err might container directory creation failure
-func (repo *Repository) Path(k K, mkdir bool) (p string, err error) {
+//err might container directory creation failure. Remote indicates we are
+//looking for the .r file that tells about the remote the chunk is stored
+func (repo *Repository) Path(k K, mkdir bool, remote bool) (p string, err error) {
 	dir := filepath.Join(repo.chunkDir, fmt.Sprintf("%x", k[:2]))
 	if mkdir {
 		err = os.MkdirAll(dir, 0777)
 		if err != nil {
 			return "", fmt.Errorf("failed to create chunk dir '%s': %v", dir, err)
 		}
+	}
+
+	if remote {
+		return filepath.Join(dir, fmt.Sprintf("%x.r", k[2:])), nil
 	}
 
 	return filepath.Join(dir, fmt.Sprintf("%x", k[2:])), nil
@@ -458,7 +469,6 @@ func (repo *Repository) Pull(ref string, w io.Writer) (err error) {
 		s := bufio.NewScanner(r1)
 		for s.Scan() {
 			fields := bytes.Fields(s.Bytes())
-
 			if len(fields) < 5 || !bytes.Equal(fields[1], []byte("blob")) {
 				continue
 			}
@@ -540,8 +550,6 @@ func (repo *Repository) Pull(ref string, w io.Writer) (err error) {
 				return fmt.Errorf("failed to move '%s' to '%s'", tmpf.Name(), s.Text())
 			}
 
-			//@TODO remove tmp file?
-			//print something to stdout
 			return nil
 		}()
 
@@ -725,8 +733,7 @@ func (repo *Repository) Scan(left, right string, w io.Writer) (err error) {
 
 //Split turns a plain bytes from 'r' into encrypted, deduplicated and persisted chunks
 //while outputting keys for those chunks on writer 'w'. Chunks are written to a local chunk
-//space, pushing these to a remote store happens at a later time (pre-push hook) but a log
-//of key file blob hashes is kept to recognize them during a push.
+//space, pushing these to a remote store happens at a later time (pre-push hook)
 func (repo *Repository) Split(r io.Reader, w io.Writer) (err error) {
 	if repo.conf.DeduplicationScope == 0 {
 		return fmt.Errorf("no deduplication scope configured, please run init", err)
@@ -763,6 +770,7 @@ func (repo *Repository) Split(r io.Reader, w io.Writer) (err error) {
 			return fmt.Errorf("Failed to write chunk (%d bytes) to buffer (size %d bytes): %v", chunk.Length, ChunkBufferSize, err)
 		}
 
+		//@TODO use hmac(SHA256) with the deduplication scope as a key
 		k := sha256.Sum256(chunk.Data)
 		printk := func(k K) error {
 			_, err = fmt.Fprintf(w, "%x\n", k)
@@ -776,7 +784,7 @@ func (repo *Repository) Split(r io.Reader, w io.Writer) (err error) {
 		err = func() error {
 
 			//formulate path
-			p, err := repo.Path(k, true)
+			p, err := repo.Path(k, true, false)
 			if err != nil {
 				return fmt.Errorf("failed to create chunk dir for '%x': %v", k, err)
 			}
@@ -830,7 +838,7 @@ func (repo *Repository) Combine(r io.Reader, w io.Writer) (err error) {
 	err = repo.ForEach(r, func(k K) error {
 
 		//open chunk file
-		p, _ := repo.Path(k, false)
+		p, _ := repo.Path(k, false, false)
 		f, err := os.OpenFile(p, os.O_RDONLY, 0666)
 		if err != nil {
 			return fmt.Errorf("failed to open chunk '%x' locally at '%s': %v", k, p, err)
@@ -843,6 +851,7 @@ func (repo *Repository) Combine(r io.Reader, w io.Writer) (err error) {
 		}
 
 		//setup the read stream
+		//@TODO use GCM cipher mode
 		var iv [aes.BlockSize]byte
 		stream := cipher.NewOFB(block, iv[:])
 		encryptr := &cipher.StreamReader{S: stream, R: f}

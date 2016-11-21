@@ -9,10 +9,19 @@ import (
 	"strings"
 )
 
+//Conf for the bits repository we're using
 type Conf struct {
-	AWSS3BucketName    string `json:"aws_s3_bucket_name"`
-	AWSAccessKeyID     string `json:"aws_access_key_id"`
+
+	//holds the aws s3 bucket name
+	AWSS3BucketName string `json:"aws_s3_bucket_name"`
+
+	//The aws key that has access to the above bucket
+	AWSAccessKeyID string `json:"aws_access_key_id"`
+
+	//the aws secret that authorizes access to the s3 bucket
 	AWSSecretAccessKey string `json:"aws_secret_access_key"`
+
+	//holds the chunking polynomial
 	DeduplicationScope uint64 `json:"deduplication_scope"`
 }
 
