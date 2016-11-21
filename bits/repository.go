@@ -24,8 +24,8 @@ var (
 	//ChunkBufferSize determines the size of the buffer that wil hold each chunk
 	ChunkBufferSize = 8 * 1024 * 1024 //8MiB
 
-	//ChunkPolynomial determines the location of splitting, needs to be equal across de-duplication space
-	ChunkPolynomial = chunker.Pol(0x3DA3358B4DC173)
+	//RemoteBranchSuffix identifies the specialty branches used for persisting remote information
+	RemoteBranchSuffix = "bits-remote"
 )
 
 //Repository provides an abstraction on top of a Git repository for a
@@ -54,6 +54,9 @@ type Repository struct {
 
 	//remotes hold the remote chunk store we're using
 	remote Remote
+
+	//bits specific configuration
+	conf *Conf
 }
 
 //NewRepository sets up an interface on top of a Git repository in the
@@ -103,22 +106,24 @@ func NewRepository(dir string, output io.Writer) (repo *Repository, err error) {
 		return nil, fmt.Errorf("repository header and footer size are not '%d': header: %d, footer: %d", hex.EncodedLen(KeySize)+1, len(repo.header), len(repo.footer))
 	}
 
-	//read configuration from
-	//@TODO how do we setup s3 credentials?
-	// buf := bytes.NewBuffer(nil)
-	// err = repo.Git(ctx, nil, buf, "config", fmt.Sprintf("remote.%s.chunk-bucket", "origin"))
-	// bucketName := strings.TrimSpace(buf.String())
-	// if err != nil {
-	// 	return fmt.Errorf("failed to get remote config: %v", err)
-	// }
-	//
-	// if bucketName == "" {
-	// 	return fmt.Errorf("no chunk-bucket configured for remote '%s'", remoteName)
-	// }
-
-	repo.remote, err = NewS3Remote(repo, "origin")
+	//setup configuration
+	repo.conf = DefaultConf()
+	err = repo.conf.OverwriteFromGit(repo)
 	if err != nil {
-		return nil, fmt.Errorf("unable to setup default chunk remote: %v", err)
+		return nil, fmt.Errorf("failed to load bits configuration from git: %v", err)
+	}
+
+	//if a bucket is configured we will attempt to configured
+	if repo.conf.AWSS3BucketName != "" {
+		fmt.Fprintf(os.Stderr, "GOT some conf: %+v\n", repo.conf)
+
+		repo.remote, err = NewS3Remote(repo, "origin")
+		if err != nil {
+			return nil, fmt.Errorf("unable to setup default chunk remote: %v", err)
+		}
+
+	} else {
+		fmt.Fprintf(os.Stderr, "GOT NO conf: %+v\n", repo.conf)
 	}
 
 	return repo, nil
@@ -146,31 +151,56 @@ func (repo *Repository) Git(ctx context.Context, in io.Reader, out io.Writer, ar
 
 //Init will prepare a git repository for usage with git bits, it configures
 //filters, installs hooks and pulls chunks to write files in the current
-//working tree
-func (repo *Repository) Init(w io.Writer, remote, bucket string) (err error) {
+//working tree. A configuration struct can be provided to populate local
+//git configuration got future bits commands
+func (repo *Repository) Init(w io.Writer, conf *Conf) (err error) {
 	ctx := context.Background()
 
 	//configure filter
-	conf := map[string]string{
+	gconf := map[string]string{
 		"filter.bits.clean":    "git bits split",
 		"filter.bits.smudge":   "git bits fetch | git bits combine",
 		"filter.bits.required": "true",
 	}
-	for k, val := range conf {
+
+	//add bits configuration
+	if conf != nil {
+		if conf.AWSS3BucketName != "" {
+			gconf["bits.aws-s3-bucket-name"] = conf.AWSS3BucketName
+		}
+
+		if conf.AWSAccessKeyID != "" {
+			gconf["bits.aws-access-key-id"] = conf.AWSAccessKeyID
+		}
+
+		if conf.AWSSecretAccessKey != "" {
+			gconf["bits.aws-secret-access-key"] = conf.AWSSecretAccessKey
+		}
+
+		if conf.DeduplicationScope != 0 {
+			gconf["bits.deduplication-scope"] = strconv.FormatUint(conf.DeduplicationScope, 10)
+		}
+
+		repo.conf = conf
+
+		//@TODO init can complete remote configuration
+		//@TODO obvious code duplication with constructor
+		repo.remote, err = NewS3Remote(repo, "origin")
+		if err != nil {
+			return fmt.Errorf("unable to setup default chunk remote: %v", err)
+		}
+
+	}
+
+	//write configuration
+	for k, val := range gconf {
 		err := repo.Git(ctx, nil, nil, "config", "--local", k, val)
 		if err != nil {
 			return fmt.Errorf("failed to configure filter: %v", err)
 		}
 	}
 
-	//configure the s3 bucket as part of the git remotes config
-	if bucket != "" && remote != "" {
-		err := repo.Git(ctx, nil, nil, "config", "--local", fmt.Sprintf("remote.%s.chunk-bucket", remote), bucket)
-		if err != nil {
-			return fmt.Errorf("failed to configure filter: %v", err)
-		}
-	}
-
+	//write hook if doesnt exist yet
 	hookp := filepath.Join(repo.gitDir, "hooks", "pre-push")
 	f, err := os.OpenFile(hookp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0777)
 	if err != nil {
@@ -182,7 +212,6 @@ func (repo *Repository) Init(w io.Writer, remote, bucket string) (err error) {
 	} else {
 		defer f.Close()
 		_, err = f.WriteString(`#/bin/sh
-			#!/bin/sh
 			command -v git-bits >/dev/null 2>&1 || { echo >&2 "This project was setup with git-bits but it can (no longer) be found in your PATH: $PATH."; exit 0; }
 			git-bits scan | git-bits push
 	`)
@@ -349,6 +378,10 @@ func (repo *Repository) Fetch(r io.Reader, w io.Writer) (err error) {
 			}
 
 			return fmt.Errorf("failed to open chunk file '%s' for writing: %v", p, err)
+		}
+
+		if repo.remote == nil {
+			return fmt.Errorf("key '%x' is stored locally, and no remote is configured!", k)
 		}
 
 		rc, err := repo.remote.ChunkReader(k)
@@ -519,6 +552,8 @@ func (repo *Repository) ScanEach(r io.Reader, w io.Writer) (err error) {
 		left := ""
 		right := ""
 
+		fmt.Fprintf(os.Stderr, "i %v", s.Text())
+
 		switch len(fields) {
 		case 4: //push hook format
 			right = string(fields[1])
@@ -681,6 +716,9 @@ func (repo *Repository) Scan(left, right string, w io.Writer) (err error) {
 //space, pushing these to a remote store happens at a later time (pre-push hook) but a log
 //of key file blob hashes is kept to recognize them during a push.
 func (repo *Repository) Split(r io.Reader, w io.Writer) (err error) {
+	if repo.conf.DeduplicationScope == 0 {
+		return fmt.Errorf("no deduplication scope configured, please run init", err)
+	}
 
 	//create a buffer that allows us to peek if this is a file that
 	//is already spit, simply copy over the bytes
@@ -701,7 +739,7 @@ func (repo *Repository) Split(r io.Reader, w io.Writer) (err error) {
 	defer w.Write(repo.footer)
 
 	//write actual chunks
-	chunkr := chunker.New(bufr, ChunkPolynomial)
+	chunkr := chunker.New(bufr, chunker.Pol(repo.conf.DeduplicationScope))
 	buf := make([]byte, ChunkBufferSize)
 	for {
 		chunk, err := chunkr.Next(buf)

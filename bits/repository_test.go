@@ -143,17 +143,22 @@ func TestSplitCombineScan(t *testing.T) {
 		"*.bin": "filter=bits",
 	})
 
-	GitConfigure(t, ctx, repo1, map[string]string{
-		"filter.bits.clean":    "git bits split",
-		"filter.bits.smudge":   "git bits fetch | git bits combine",
-		"filter.bits.required": "true",
-	})
+	err := repo1.Init(os.Stderr, bits.DefaultConf())
+	if err != nil {
+		t.Error(err)
+	}
+
+	// GitConfigure(t, ctx, repo1, map[string]string{
+	// 	"filter.bits.clean":    "git bits split",
+	// 	"filter.bits.smudge":   "git bits fetch | git bits combine",
+	// 	"filter.bits.required": "true",
+	// })
 
 	fpath := filepath.Join(wd1, "file1.bin")
 	f1 := WriteRandomFile(t, fpath, 5*1024*1024)
 	f1.Close()
 
-	err := repo1.Git(ctx, nil, nil, "add", "-A")
+	err = repo1.Git(ctx, nil, nil, "add", "-A")
 	if err != nil {
 		t.Error(err)
 	}
@@ -247,7 +252,22 @@ func TestPushFetch(t *testing.T) {
 		t.Errorf("env TEST_BUCKET not configured")
 	}
 
-	err := repo1.Init(os.Stderr, "origin", bucket)
+	accessKey := os.Getenv("AWS_ACCESS_KEY_ID")
+	if accessKey == "" {
+		t.Errorf("env AWS_ACCESS_KEY_ID not configured")
+	}
+
+	secretKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
+	if secretKey == "" {
+		t.Errorf("env AWS_SECRET_ACCESS_KEY not configured")
+	}
+
+	conf := bits.DefaultConf()
+	conf.AWSS3BucketName = bucket
+	conf.AWSAccessKeyID = accessKey
+	conf.AWSSecretAccessKey = secretKey
+
+	err := repo1.Init(os.Stderr, conf)
 	if err != nil {
 		t.Error(err)
 	}
@@ -315,7 +335,7 @@ func TestPushFetch(t *testing.T) {
 		"*.bin": "filter=bits",
 	})
 
-	err = repo2.Init(os.Stderr, "origin", bucket)
+	err = repo2.Init(os.Stderr, conf)
 	if err != nil {
 		t.Error(err)
 	}

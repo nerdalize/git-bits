@@ -84,7 +84,9 @@ func (cmd *Init) Run(args []string) int {
 		return 3
 	}
 
-	err = repo.Init(os.Stdout, InitOpts.Remote, InitOpts.Bucket)
+	conf := bits.DefaultConf()
+
+	err = repo.Init(os.Stdout, conf)
 	if err != nil {
 		cmd.ui.Error(fmt.Sprintf("failed to fetch: %v", err))
 		return 4
