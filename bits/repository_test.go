@@ -268,10 +268,11 @@ func TestPushFetch(t *testing.T) {
 		t.Error(err)
 	}
 
+	fname := " with space.bin"
 	fsize := int64(5 * 1024 * 1024)
-	fpath := filepath.Join(wd1, " with space.bin")
+	fpath := filepath.Join(wd1, fname)
 	f1 := WriteRandomFile(t, fpath, fsize)
-	err = f1.Chmod(0777) //add some non-default permission
+	err = f1.Chmod(0755) //add some non-default permission
 	if err != nil {
 		t.Error(err)
 	}
@@ -320,7 +321,7 @@ func TestPushFetch(t *testing.T) {
 		}()
 	}
 
-	orgContent, err := ioutil.ReadFile(filepath.Join(wd1, " with space.bin"))
+	orgContent, err := ioutil.ReadFile(filepath.Join(wd1, fname))
 	if err != nil {
 		t.Error(err)
 	}
@@ -336,7 +337,7 @@ func TestPushFetch(t *testing.T) {
 		"*.bin": "filter=bits",
 	})
 
-	beforefi, err := os.Stat(filepath.Join(wd2, " with space.bin"))
+	beforefi, err := os.Stat(filepath.Join(wd2, fname))
 	if err != nil {
 		t.Error(err)
 	}
@@ -346,12 +347,12 @@ func TestPushFetch(t *testing.T) {
 		t.Error(err)
 	}
 
-	newContent, err := ioutil.ReadFile(filepath.Join(wd2, " with space.bin"))
+	newContent, err := ioutil.ReadFile(filepath.Join(wd2, fname))
 	if err != nil {
 		t.Error(err)
 	}
 
-	afterfi, err := os.Stat(filepath.Join(wd2, " with space.bin"))
+	afterfi, err := os.Stat(filepath.Join(wd2, fname))
 	if err != nil {
 		t.Error(err)
 	}
@@ -362,5 +363,15 @@ func TestPushFetch(t *testing.T) {
 
 	if !bytes.Equal(orgContent, newContent) {
 		t.Error("after clone and init, file content should be equal to content before edit")
+	}
+
+	buf := bytes.NewBuffer(nil)
+	err = repo2.Git(ctx, nil, buf, "status")
+	if err != nil {
+		t.Error(err)
+	}
+
+	if strings.Contains(buf.String(), " with space.bin") {
+		t.Error("after initi git status shouldnt report files being modified, got: \n %s", buf.String())
 	}
 }

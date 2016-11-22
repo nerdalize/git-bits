@@ -229,7 +229,12 @@ func (repo *Repository) Init(w io.Writer, conf *Conf) (err error) {
 		}
 	}
 
-	return repo.Pull("HEAD", w)
+	err = repo.Pull("HEAD", w)
+	if err != nil {
+		return fmt.Errorf("failed to pull chunks for HEAD: %v", err)
+	}
+
+	return nil
 }
 
 //ForEach is a convenient method for running logic for each chunk
@@ -443,10 +448,11 @@ func (repo *Repository) Path(k K, mkdir bool, remote bool) (p string, err error)
 //not currently available in the local store
 func (repo *Repository) Pull(ref string, w io.Writer) (err error) {
 
-	// rev-list --objects <ref> | f1 | cat-file --batch-check | f2
+	// ls-tree -r -l | f1 | f2 | git update-index -q --refresh --stdin
 	ctx := context.Background()
 	r1, w1 := io.Pipe()
 	r2, w2 := io.Pipe()
+	r3, w3 := io.Pipe()
 
 	errs := []string{}
 	errCh := make(chan error)
@@ -461,7 +467,8 @@ func (repo *Repository) Pull(ref string, w io.Writer) (err error) {
 		defer w1.Close()
 		err = repo.Git(ctx, nil, w1, "ls-tree", "-r", "-l", ref)
 		if err != nil {
-			errCh <- err
+			//@TODO this can error if the repository (no commits yet)
+			// errCh <- err
 		}
 	}()
 
@@ -500,81 +507,90 @@ func (repo *Repository) Pull(ref string, w io.Writer) (err error) {
 		}
 	}()
 
-	s := bufio.NewScanner(r2)
-	for s.Scan() {
-		err = func() error {
+	go func() {
+		defer w3.Close()
+		s := bufio.NewScanner(r2)
+		for s.Scan() {
+			err = func() error {
 
-			fpath := filepath.Join(repo.rootDir, s.Text())
-			f, err := os.OpenFile(fpath, os.O_RDWR|os.O_CREATE, 0666)
-			if err != nil {
-				return err
-			}
-
-			defer f.Close()
-			hdr := make([]byte, hex.EncodedLen(KeySize))
-			_, err = f.Read(hdr)
-			if err != nil {
-				//if we cant even read a complete header, its not gonna contain chunks
-				return nil
-			}
-
-			offs, err := f.Seek(0, 0)
-			if err != nil || offs != 0 {
-				return fmt.Errorf("failed to seek files: %v", err)
-			}
-
-			if !bytes.Equal(hdr, repo.header[:len(repo.header)-1]) {
-				return nil
-			}
-
-			//We know its a chunks file that needs filling
-			tmpf, err := ioutil.TempFile("", "bits_tmp_")
-			if err != nil {
-				return err
-			}
-
-			fi, err := f.Stat()
-			if err != nil {
-				return fmt.Errorf("failed to stat original file for permissions: %v", err)
-			}
-
-			//mod the tempfile as the original
-			err = tmpf.Chmod(fi.Mode())
-			if err != nil {
-				return fmt.Errorf("failed to modify temp file permissions: %v", err)
-			}
-
-			pr, pw := io.Pipe()
-			go func() {
-				defer pw.Close()
-				err = repo.Fetch(f, pw)
+				fpath := filepath.Join(repo.rootDir, s.Text())
+				f, err := os.OpenFile(fpath, os.O_RDWR|os.O_CREATE, 0666)
 				if err != nil {
-					errCh <- err
+					return err
 				}
+
+				defer f.Close()
+				hdr := make([]byte, hex.EncodedLen(KeySize))
+				_, err = f.Read(hdr)
+				if err != nil {
+					//if we cant even read a complete header, its not gonna contain chunks
+					return nil
+				}
+
+				offs, err := f.Seek(0, 0)
+				if err != nil || offs != 0 {
+					return fmt.Errorf("failed to seek files: %v", err)
+				}
+
+				if !bytes.Equal(hdr, repo.header[:len(repo.header)-1]) {
+					return nil
+				}
+
+				//We know its a chunks file that needs filling
+				tmpf, err := ioutil.TempFile("", "bits_tmp_")
+				if err != nil {
+					return err
+				}
+
+				fi, err := f.Stat()
+				if err != nil {
+					return fmt.Errorf("failed to stat original file for permissions: %v", err)
+				}
+
+				//mod the tempfile as the original
+				err = tmpf.Chmod(fi.Mode())
+				if err != nil {
+					return fmt.Errorf("failed to modify temp file permissions: %v", err)
+				}
+
+				pr, pw := io.Pipe()
+				go func() {
+					defer pw.Close()
+					err = repo.Fetch(f, pw)
+					if err != nil {
+						errCh <- err
+					}
+				}()
+
+				defer tmpf.Close()
+				err = repo.Combine(pr, tmpf)
+				if err != nil {
+					return fmt.Errorf("failed to combine: %v", err)
+				}
+
+				err = os.Remove(fpath)
+				if err != nil {
+					return fmt.Errorf("failed to remove original chunk: %v", err)
+				}
+
+				err = os.Rename(tmpf.Name(), fpath)
+				if err != nil {
+					return fmt.Errorf("failed to move '%s' to '%s'", tmpf.Name(), s.Text())
+				}
+
+				fmt.Fprintf(w3, "%s\n", fpath)
+				return nil
 			}()
 
-			defer tmpf.Close()
-			err = repo.Combine(pr, tmpf)
 			if err != nil {
-				return fmt.Errorf("failed to combine: %v", err)
+				errCh <- fmt.Errorf("failed to check file '%s' for header content: %v", err)
 			}
-
-			err = os.Remove(fpath)
-			if err != nil {
-				return fmt.Errorf("failed to remove original chunk: %v", err)
-			}
-
-			err = os.Rename(tmpf.Name(), fpath)
-			if err != nil {
-				return fmt.Errorf("failed to move '%s' to '%s'", tmpf.Name(), s.Text())
-			}
-
-			return nil
-		}()
-
-		if err != nil {
-			return fmt.Errorf("failed to check file '%s' for header content: %v", err)
 		}
+	}()
+
+	err = repo.Git(ctx, r3, nil, "update-index", "-q", "--refresh", "--stdin")
+	if err != nil {
+		return fmt.Errorf("failed to update index: %v", err)
 	}
 
 	if len(errs) > 0 {
@@ -590,8 +606,6 @@ func (repo *Repository) ScanEach(r io.Reader, w io.Writer) (err error) {
 		fields := bytes.Fields(s.Bytes())
 		left := ""
 		right := ""
-
-		fmt.Fprintf(os.Stderr, "i %v", s.Text())
 
 		switch len(fields) {
 		case 4: //push hook format
