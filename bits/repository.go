@@ -533,6 +533,17 @@ func (repo *Repository) Pull(ref string, w io.Writer) (err error) {
 				return err
 			}
 
+			fi, err := f.Stat()
+			if err != nil {
+				return fmt.Errorf("failed to stat original file for permissions: %v", err)
+			}
+
+			//mod the tempfile as the original
+			err = tmpf.Chmod(fi.Mode())
+			if err != nil {
+				return fmt.Errorf("failed to modify temp file permissions: %v", err)
+			}
+
 			pr, pw := io.Pipe()
 			go func() {
 				defer pw.Close()

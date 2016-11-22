@@ -271,6 +271,11 @@ func TestPushFetch(t *testing.T) {
 	fsize := int64(5 * 1024 * 1024)
 	fpath := filepath.Join(wd1, " with space.bin")
 	f1 := WriteRandomFile(t, fpath, fsize)
+	err = f1.Chmod(0777) //add some non-default permission
+	if err != nil {
+		t.Error(err)
+	}
+
 	f1.Close()
 
 	err = repo1.Git(ctx, nil, nil, "add", "-A")
@@ -331,6 +336,11 @@ func TestPushFetch(t *testing.T) {
 		"*.bin": "filter=bits",
 	})
 
+	beforefi, err := os.Stat(filepath.Join(wd2, " with space.bin"))
+	if err != nil {
+		t.Error(err)
+	}
+
 	err = repo2.Init(os.Stderr, conf)
 	if err != nil {
 		t.Error(err)
@@ -339,6 +349,15 @@ func TestPushFetch(t *testing.T) {
 	newContent, err := ioutil.ReadFile(filepath.Join(wd2, " with space.bin"))
 	if err != nil {
 		t.Error(err)
+	}
+
+	afterfi, err := os.Stat(filepath.Join(wd2, " with space.bin"))
+	if err != nil {
+		t.Error(err)
+	}
+
+	if beforefi.Mode() != afterfi.Mode() {
+		t.Error("file permissions should be equal after initialization")
 	}
 
 	if !bytes.Equal(orgContent, newContent) {
