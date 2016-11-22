@@ -469,8 +469,14 @@ func (repo *Repository) Pull(ref string, w io.Writer) (err error) {
 		defer w2.Close()
 		s := bufio.NewScanner(r1)
 		for s.Scan() {
+
+			//@see https://git-scm.com/docs/git-ls-tree
+			//line : <mode> SP <type> SP <object> TAB <file>, we use the
+			//tab to be able to clearly seperate the file name as it may contain
+			//field characters
+			tfields := bytes.SplitN(s.Bytes(), []byte("\t"), 2)
 			fields := bytes.Fields(s.Bytes())
-			if len(fields) < 5 || !bytes.Equal(fields[1], []byte("blob")) {
+			if len(fields) < 5 || len(tfields) != 2 || !bytes.Equal(fields[1], []byte("blob")) {
 				continue
 			}
 
@@ -486,7 +492,7 @@ func (repo *Repository) Pull(ref string, w io.Writer) (err error) {
 				continue
 			}
 
-			fmt.Fprintf(w2, "%s\n", fields[4])
+			fmt.Fprintf(w2, "%s\n", tfields[1])
 		}
 
 		if err = s.Err(); err != nil {
@@ -497,6 +503,7 @@ func (repo *Repository) Pull(ref string, w io.Writer) (err error) {
 	s := bufio.NewScanner(r2)
 	for s.Scan() {
 		err = func() error {
+
 			fpath := filepath.Join(repo.rootDir, s.Text())
 			f, err := os.OpenFile(fpath, os.O_RDWR|os.O_CREATE, 0666)
 			if err != nil {

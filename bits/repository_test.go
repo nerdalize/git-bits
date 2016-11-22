@@ -131,6 +131,7 @@ func TestNewRepository(t *testing.T) {
 	}
 }
 
+//test basic file splitting and combining
 func TestSplitCombineScan(t *testing.T) {
 	ctx := context.Background()
 	ctx, _ = context.WithTimeout(ctx, time.Second*10)
@@ -231,6 +232,7 @@ func TestSplitCombineScan(t *testing.T) {
 	}
 }
 
+//tests pushing and fetching objects from a git remote
 func TestPushFetch(t *testing.T) {
 	ctx := context.Background()
 	ctx, _ = context.WithTimeout(ctx, time.Second*60)
@@ -267,7 +269,7 @@ func TestPushFetch(t *testing.T) {
 	}
 
 	fsize := int64(5 * 1024 * 1024)
-	fpath := filepath.Join(wd1, "file_a.bin")
+	fpath := filepath.Join(wd1, " with space.bin")
 	f1 := WriteRandomFile(t, fpath, fsize)
 	f1.Close()
 
@@ -313,7 +315,7 @@ func TestPushFetch(t *testing.T) {
 		}()
 	}
 
-	orgContent, err := ioutil.ReadFile(filepath.Join(wd1, "file_a.bin"))
+	orgContent, err := ioutil.ReadFile(filepath.Join(wd1, " with space.bin"))
 	if err != nil {
 		t.Error(err)
 	}
@@ -334,7 +336,7 @@ func TestPushFetch(t *testing.T) {
 		t.Error(err)
 	}
 
-	newContent, err := ioutil.ReadFile(filepath.Join(wd2, "file_a.bin"))
+	newContent, err := ioutil.ReadFile(filepath.Join(wd2, " with space.bin"))
 	if err != nil {
 		t.Error(err)
 	}
