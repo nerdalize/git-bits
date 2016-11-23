@@ -57,6 +57,13 @@ type Repository struct {
 
 	//bits specific configuration
 	conf *Conf
+
+	//this channel receives any chunk Key that is hanled in an any operation
+	keyProgressCh chan KeyOp
+
+	//is called when a chunk was handled in any operation, can be called
+	//concurrently
+	KeyProgressFn func(KeyOp)
 }
 
 //NewRepository sets up an interface on top of a Git repository in the
@@ -127,6 +134,15 @@ func NewRepository(dir string, output io.Writer) (repo *Repository, err error) {
 			return nil, fmt.Errorf("unable to setup chunk remote: %v", err)
 		}
 	}
+
+	//start handling key progress
+	repo.keyProgressCh = make(chan KeyOp, 1)
+	repo.KeyProgressFn = func(kop KeyOp) { fmt.Fprintf(repo.output, "%x (%s)\n", kop.K, string(kop.Op)) }
+	go func() {
+		for kop := range repo.keyProgressCh {
+			repo.KeyProgressFn(kop)
+		}
+	}()
 
 	return repo, nil
 }
@@ -243,7 +259,7 @@ func (repo *Repository) ForEach(r io.Reader, fn func(K) error) error {
 	s := bufio.NewScanner(r)
 	for s.Scan() {
 
-		//skip headers/footers
+		//and in any case skip it
 		if bytes.Equal(s.Bytes(), repo.header[:len(repo.header)-1]) ||
 			bytes.Equal(s.Bytes(), repo.footer[:len(repo.footer)-1]) {
 			continue
@@ -296,6 +312,7 @@ func (repo *Repository) Push(r io.Reader, remoteName string) (err error) {
 
 	//stream remote keys 500 at a time and write to local chunk store
 	//@TODO research http://stackoverflow.com/questions/495161/fast-disk-based-hashtables
+	//@TODO we actually want to store this in some memory-efficient bit array
 	err = repo.ForEach(pr, func(k K) error {
 		rp, err := repo.Path(k, true, true)
 		if err != nil {
@@ -331,13 +348,18 @@ func (repo *Repository) Push(r io.Reader, remoteName string) (err error) {
 		rf, err := os.OpenFile(rp, os.O_CREATE|os.O_EXCL, 0777)
 		if err != nil {
 			if os.IsExist(err) {
-				return nil //index file already exists, we can skip push, yeey
+				//index file already exists, we can skip push, yeey
+				repo.keyProgressCh <- KeyOp{SkipOp, k}
+				return nil
 			}
 
 			return fmt.Errorf("failed to write remote file for '%x': %v", k, err)
 		}
 
-		//always close the remote file, but if anything below fails,
+		//indicate we'll be attempting to push the chunk
+		repo.keyProgressCh <- KeyOp{PushOp, k}
+
+		//always close the .r file, but if anything below fails,
 		//dont consider the chunk to be pushed and remove .r file
 		defer rf.Close()
 		defer func() {
@@ -398,6 +420,7 @@ func (repo *Repository) Fetch(r io.Reader, w io.Writer) (err error) {
 		f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0666)
 		if err != nil {
 			if os.IsExist(err) {
+				repo.keyProgressCh <- KeyOp{SkipOp, k}
 				return printk(k)
 			}
 
@@ -408,6 +431,8 @@ func (repo *Repository) Fetch(r io.Reader, w io.Writer) (err error) {
 			return fmt.Errorf("key '%x' isn't stored locally, but no remote is configured", k)
 		}
 
+		//indicate we'll be attempting to fetch the key
+		repo.keyProgressCh <- KeyOp{FetchOp, k}
 		rc, err := repo.remote.ChunkReader(k)
 		if err != nil {
 			return fmt.Errorf("failed to get chunk reader for key '%x': %v", k, err)
@@ -467,7 +492,8 @@ func (repo *Repository) Pull(ref string, w io.Writer) (err error) {
 		defer w1.Close()
 		err = repo.Git(ctx, nil, w1, "ls-tree", "-r", "-l", ref)
 		if err != nil {
-			//@TODO this can error if the repository (no commits yet)
+			//@TODO this will error if the repository is empty (no commits yet)
+			//probaly throw a warning instead
 			// errCh <- err
 		}
 	}()
@@ -773,7 +799,7 @@ func (repo *Repository) Split(r io.Reader, w io.Writer) (err error) {
 	}
 
 	//create a buffer that allows us to peek if this is a file that
-	//is already spit, simply copy over the bytes
+	//is already spit, if so: simply copy over the bytes, nothing to split
 	bufr := bufio.NewReader(r)
 	hdr, _ := bufr.Peek(hex.EncodedLen(KeySize) + 1)
 	if bytes.Equal(hdr, repo.header) {
@@ -841,6 +867,8 @@ func (repo *Repository) Split(r io.Reader, w io.Writer) (err error) {
 			}
 
 			//create encrypt writer
+			//@TODO use GCM cipher mode
+			//@TODO	If the key is unique for each ciphertext, then it's ok to use a zero IV.
 			defer f.Close()
 			var iv [aes.BlockSize]byte
 			stream := cipher.NewOFB(block, iv[:])
@@ -885,6 +913,7 @@ func (repo *Repository) Combine(r io.Reader, w io.Writer) (err error) {
 
 		//setup the read stream
 		//@TODO use GCM cipher mode
+		//@TODO	If the key is unique for each ciphertext, then it's ok to use a zero IV.
 		var iv [aes.BlockSize]byte
 		stream := cipher.NewOFB(block, iv[:])
 		encryptr := &cipher.StreamReader{S: stream, R: f}

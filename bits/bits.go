@@ -10,6 +10,26 @@ const KeySize = 32
 //Chunks holds opaque binary data
 type Chunk []byte
 
+//Op describes possible key operations
+type Op string
+
+//KeyOp descibes a key operation
+type KeyOp struct {
+	Op Op
+	K  K
+}
+
+var (
+	//PushOp tells a chunk was/is pushed to a remote
+	PushOp = Op("push")
+
+	//FetchOp tells a chunk was/is fetched from a remote
+	FetchOp = Op("fetch")
+
+	//SkipOp tells a chunk push/fetch could be skipped due to deduplication
+	SkipOp = Op("skip")
+)
+
 //K are 32-byte chunk keys, de-duplicated lookups and
 //convergent encryption setup assume this this to be
 //a (cryptographic) hash of plain-text chunk content
