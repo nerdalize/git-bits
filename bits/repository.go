@@ -137,7 +137,13 @@ func NewRepository(dir string, output io.Writer) (repo *Repository, err error) {
 
 	//start handling key progress
 	repo.keyProgressCh = make(chan KeyOp, 1)
-	repo.KeyProgressFn = func(kop KeyOp) { fmt.Fprintf(repo.output, "%x (%s)\n", kop.K, string(kop.Op)) }
+	repo.KeyProgressFn = func(kop KeyOp) {
+		if kop.Skipped {
+			fmt.Fprintf(repo.output, "%x (already %sed)\n", kop.K, string(kop.Op))
+		} else {
+			fmt.Fprintf(repo.output, "%x (%s)\n", kop.K, string(kop.Op))
+		}
+	}
 	go func() {
 		for kop := range repo.keyProgressCh {
 			repo.KeyProgressFn(kop)
@@ -349,7 +355,7 @@ func (repo *Repository) Push(r io.Reader, remoteName string) (err error) {
 		if err != nil {
 			if os.IsExist(err) {
 				//index file already exists, we can skip push, yeey
-				repo.keyProgressCh <- KeyOp{SkipOp, k}
+				repo.keyProgressCh <- KeyOp{PushOp, k, true}
 				return nil
 			}
 
@@ -357,7 +363,7 @@ func (repo *Repository) Push(r io.Reader, remoteName string) (err error) {
 		}
 
 		//indicate we'll be attempting to push the chunk
-		repo.keyProgressCh <- KeyOp{PushOp, k}
+		repo.keyProgressCh <- KeyOp{PushOp, k, false}
 
 		//always close the .r file, but if anything below fails,
 		//dont consider the chunk to be pushed and remove .r file
@@ -420,7 +426,7 @@ func (repo *Repository) Fetch(r io.Reader, w io.Writer) (err error) {
 		f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0666)
 		if err != nil {
 			if os.IsExist(err) {
-				repo.keyProgressCh <- KeyOp{SkipOp, k}
+				repo.keyProgressCh <- KeyOp{FetchOp, k, true}
 				return printk(k)
 			}
 
@@ -432,7 +438,7 @@ func (repo *Repository) Fetch(r io.Reader, w io.Writer) (err error) {
 		}
 
 		//indicate we'll be attempting to fetch the key
-		repo.keyProgressCh <- KeyOp{FetchOp, k}
+		repo.keyProgressCh <- KeyOp{FetchOp, k, false}
 		rc, err := repo.remote.ChunkReader(k)
 		if err != nil {
 			return fmt.Errorf("failed to get chunk reader for key '%x': %v", k, err)
@@ -538,7 +544,6 @@ func (repo *Repository) Pull(ref string, w io.Writer) (err error) {
 		s := bufio.NewScanner(r2)
 		for s.Scan() {
 			err = func() error {
-
 				fpath := filepath.Join(repo.rootDir, s.Text())
 				f, err := os.OpenFile(fpath, os.O_RDWR|os.O_CREATE, 0666)
 				if err != nil {

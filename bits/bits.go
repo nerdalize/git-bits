@@ -15,8 +15,9 @@ type Op string
 
 //KeyOp descibes a key operation
 type KeyOp struct {
-	Op Op
-	K  K
+	Op      Op
+	K       K
+	Skipped bool
 }
 
 var (
@@ -25,9 +26,6 @@ var (
 
 	//FetchOp tells a chunk was/is fetched from a remote
 	FetchOp = Op("fetch")
-
-	//SkipOp tells a chunk push/fetch could be skipped due to deduplication
-	SkipOp = Op("skip")
 )
 
 //K are 32-byte chunk keys, de-duplicated lookups and
