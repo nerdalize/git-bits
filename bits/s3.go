@@ -1,9 +1,12 @@
 package bits
 
 import (
+	"encoding/hex"
+	"encoding/xml"
 	"fmt"
 	"io"
-	"os"
+	"net/http"
+	"net/url"
 
 	"github.com/rlmcpherson/s3gof3r"
 )
@@ -12,43 +15,100 @@ type S3Remote struct {
 	gitRemote string
 	bucket    *s3gof3r.Bucket
 	repo      *Repository
-	idx       *Index
 }
 
-func NewS3Remote(repo *Repository, name string) (s3 *S3Remote, err error) {
+func NewS3Remote(repo *Repository, remote, bucket, accessKey, secretKey string) (s3 *S3Remote, err error) {
 	s3 = &S3Remote{
 		repo:      repo,
-		gitRemote: name,
+		gitRemote: remote,
 	}
 
-	//@TODO make git remote we're using configurable
-	s3.idx, err = NewIndex(repo, "", s3.gitRemote)
-	if err != nil {
-		return nil, fmt.Errorf("failed to setup index: %v", err)
-	}
+	s3.bucket = s3gof3r.New("", s3gof3r.Keys{
+		AccessKey: accessKey,
+		SecretKey: secretKey,
+	}).Bucket(bucket)
 
-	//@TODO make this configurable
-	creds, err := s3gof3r.EnvKeys()
-	if err != nil {
-		return nil, fmt.Errorf("Failed to get s3 credentials from environment: %v", err)
-	}
-
-	testBucket := os.Getenv("TEST_BUCKET")
-	if testBucket == "" {
-		return nil, fmt.Errorf("Failed to get bucket from TEST_BUCKET environment")
-	}
-
-	//@TODO make bucket name configurable
-	s3.bucket = s3gof3r.New("", creds).Bucket(testBucket)
 	return s3, nil
-}
-
-func (s3 *S3Remote) Index() *Index {
-	return s3.idx
 }
 
 func (s3 *S3Remote) Name() string {
 	return s3.gitRemote
+}
+
+//ListChunks will write all chunks in the bucket to writer w
+func (s *S3Remote) ListChunks(w io.Writer) (err error) {
+
+	// <?xml version="1.0" encoding="UTF-8"?>
+	// <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+	// 	<Name>nlz-ad3c28975b40bb38-test-bucket</Name>
+	// 	<Prefix></Prefix>
+	// 	<KeyCount>578</KeyCount>
+	// 	<MaxKeys>1000</MaxKeys>
+	// 	<IsTruncated>false</IsTruncated>
+	// 	<Contents>
+	// 		<Key>.md5/0095a2145dbf524ddf22bf0d0bc6a149066d579e96812da393e87fc3696516fc.md5</Key>
+	// 		<LastModified>2016-11-19T09:17:17.000Z</LastModified>
+	// 		<ETag>&quot;6f1aef3bef9e4a572e18249ed4014a7d&quot;</ETag>
+	// 		<Size>32</Size>
+	// 		<StorageClass>STANDARD</StorageClass>
+	// 	</Contents>
+	//  <Contents>
+	//    ...
+	v := struct {
+		XMLName               xml.Name `xml:"ListBucketResult"`
+		Name                  string   `xml:"Name"`
+		IsTruncated           bool     `xml:"IsTruncated"`
+		NextContinuationToken string   `xml:"NextContinuationToken"`
+		Contents              []struct {
+			Key string `xml:"Key"`
+		} `xml:"Contents"`
+	}{}
+
+	next := ""
+	for {
+		q := url.Values{}
+		q.Set("list-type", "2")
+		q.Set("max-keys", "500")
+		if next != "" {
+			q.Set("continuation-token", next)
+		}
+
+		loc := fmt.Sprintf("%s://%s.%s/?%s", s.bucket.Scheme, s.bucket.Name, s.bucket.Domain, q.Encode())
+		req, err := http.NewRequest("GET", loc, nil)
+		if err != nil {
+			return fmt.Errorf("failed to create listing request: %v", err)
+		}
+
+		s.bucket.Sign(req)
+		resp, err := s.bucket.Client.Do(req)
+		if err != nil {
+			return fmt.Errorf("failed to request bucket list: %v", err)
+		}
+
+		defer resp.Body.Close()
+		dec := xml.NewDecoder(resp.Body)
+		err = dec.Decode(&v)
+		if err != nil {
+			return fmt.Errorf("failed to decode s3 xml: %v")
+		}
+
+		for _, obj := range v.Contents {
+			if len(obj.Key) != hex.EncodedLen(KeySize) {
+				continue
+			}
+
+			fmt.Fprintf(w, "%s\n", obj.Key)
+		}
+
+		v.Contents = nil
+		if !v.IsTruncated {
+			break
+		}
+
+		next = v.NextContinuationToken
+	}
+
+	return nil
 }
 
 //ChunkReader returns a file handle that the chunk with the given

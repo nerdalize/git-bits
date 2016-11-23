@@ -50,7 +50,7 @@ func GitCloneWorkspace(remote string, t *testing.T) (dir string, repo *bits.Repo
 		t.Fatal(err)
 	}
 
-	repo, err = bits.NewRepository(dir)
+	repo, err = bits.NewRepository(dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,9 +87,10 @@ func BuildBinaryInPath(t *testing.T, ctx context.Context) {
 
 	cmd := exec.CommandContext(ctx, "go", "build", "-o", filepath.Join(gopath, "bin", "git-bits"))
 	cmd.Dir = filepath.Join(gopath, "src", "github.com", "nerdalize", "git-bits")
+	cmd.Stderr = os.Stderr
 	err := cmd.Run()
 	if err != nil {
-		t.Fatalf("failed to build git-bits, make sure this project is in $GOPATH/src/github.com/nerdalize/nerdalize: %v", err)
+		t.Fatalf("failed to build git-bits, make sure this project is in $GOPATH/src/github.com/nerdalize/git-bits: %v", err)
 	}
 
 }
@@ -110,26 +111,27 @@ func WriteRandomFile(t *testing.T, path string, size int64) (f *os.File) {
 }
 
 func TestNewRepository(t *testing.T) {
-	_, err := bits.NewRepository("/tmp/my-bogus-repo")
+	_, err := bits.NewRepository("/tmp/my-bogus-repo", nil)
 	if err == nil {
 		t.Errorf("creating repo in non-existing directory should fail")
 	} else {
-		if !strings.Contains(err.Error(), "workspace") {
+		if !strings.Contains(err.Error(), "git repository") {
 			t.Errorf("creating repo should fail with non existing dir error, got: %v", err)
 		}
 	}
 
 	tdir, _ := ioutil.TempDir("", "test_wdir_")
-	_, err = bits.NewRepository(tdir)
+	_, err = bits.NewRepository(tdir, nil)
 	if err == nil {
 		t.Errorf("creating repo in non-git directory should fail")
 	} else {
-		if !strings.Contains(err.Error(), "workspace") {
+		if !strings.Contains(err.Error(), "git repository") {
 			t.Errorf("creating repo should fail with exit code, got: %v", err)
 		}
 	}
 }
 
+//test basic file splitting and combining
 func TestSplitCombineScan(t *testing.T) {
 	ctx := context.Background()
 	ctx, _ = context.WithTimeout(ctx, time.Second*10)
@@ -142,17 +144,16 @@ func TestSplitCombineScan(t *testing.T) {
 		"*.bin": "filter=bits",
 	})
 
-	GitConfigure(t, ctx, repo1, map[string]string{
-		"filter.bits.clean":    "git bits split",
-		"filter.bits.smudge":   "git bits fetch | git bits combine",
-		"filter.bits.required": "true",
-	})
+	err := repo1.Init(os.Stderr, bits.DefaultConf())
+	if err != nil {
+		t.Error(err)
+	}
 
 	fpath := filepath.Join(wd1, "file1.bin")
 	f1 := WriteRandomFile(t, fpath, 5*1024*1024)
 	f1.Close()
 
-	err := repo1.Git(ctx, nil, nil, "add", "-A")
+	err = repo1.Git(ctx, nil, nil, "add", "-A")
 	if err != nil {
 		t.Error(err)
 	}
@@ -231,6 +232,7 @@ func TestSplitCombineScan(t *testing.T) {
 	}
 }
 
+//tests pushing and fetching objects from a git remote
 func TestPushFetch(t *testing.T) {
 	ctx := context.Background()
 	ctx, _ = context.WithTimeout(ctx, time.Second*60)
@@ -241,14 +243,40 @@ func TestPushFetch(t *testing.T) {
 		"*.bin": "filter=bits",
 	})
 
-	err := repo1.Init(os.Stderr)
+	bucket := os.Getenv("TEST_BUCKET")
+	if bucket == "" {
+		t.Errorf("env TEST_BUCKET not configured")
+	}
+
+	accessKey := os.Getenv("AWS_ACCESS_KEY_ID")
+	if accessKey == "" {
+		t.Errorf("env AWS_ACCESS_KEY_ID not configured")
+	}
+
+	secretKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
+	if secretKey == "" {
+		t.Errorf("env AWS_SECRET_ACCESS_KEY not configured")
+	}
+
+	conf := bits.DefaultConf()
+	conf.AWSS3BucketName = bucket
+	conf.AWSAccessKeyID = accessKey
+	conf.AWSSecretAccessKey = secretKey
+
+	err := repo1.Init(os.Stderr, conf)
 	if err != nil {
 		t.Error(err)
 	}
 
+	fname := " with space.bin"
 	fsize := int64(5 * 1024 * 1024)
-	fpath := filepath.Join(wd1, "file_a.bin")
+	fpath := filepath.Join(wd1, fname)
 	f1 := WriteRandomFile(t, fpath, fsize)
+	err = f1.Chmod(0755) //add some non-default permission
+	if err != nil {
+		t.Error(err)
+	}
+
 	f1.Close()
 
 	err = repo1.Git(ctx, nil, nil, "add", "-A")
@@ -293,7 +321,7 @@ func TestPushFetch(t *testing.T) {
 		}()
 	}
 
-	orgContent, err := ioutil.ReadFile(filepath.Join(wd1, "file_a.bin"))
+	orgContent, err := ioutil.ReadFile(filepath.Join(wd1, fname))
 	if err != nil {
 		t.Error(err)
 	}
@@ -309,17 +337,41 @@ func TestPushFetch(t *testing.T) {
 		"*.bin": "filter=bits",
 	})
 
-	err = repo2.Init(os.Stderr)
+	beforefi, err := os.Stat(filepath.Join(wd2, fname))
 	if err != nil {
 		t.Error(err)
 	}
 
-	newContent, err := ioutil.ReadFile(filepath.Join(wd2, "file_a.bin"))
+	err = repo2.Init(os.Stderr, conf)
 	if err != nil {
 		t.Error(err)
+	}
+
+	newContent, err := ioutil.ReadFile(filepath.Join(wd2, fname))
+	if err != nil {
+		t.Error(err)
+	}
+
+	afterfi, err := os.Stat(filepath.Join(wd2, fname))
+	if err != nil {
+		t.Error(err)
+	}
+
+	if beforefi.Mode() != afterfi.Mode() {
+		t.Error("file permissions should be equal after initialization")
 	}
 
 	if !bytes.Equal(orgContent, newContent) {
 		t.Error("after clone and init, file content should be equal to content before edit")
+	}
+
+	buf := bytes.NewBuffer(nil)
+	err = repo2.Git(ctx, nil, buf, "status")
+	if err != nil {
+		t.Error(err)
+	}
+
+	if strings.Contains(buf.String(), " with space.bin") {
+		t.Error("after initi git status shouldnt report files being modified, got: \n %s", buf.String())
 	}
 }
