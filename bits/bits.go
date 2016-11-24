@@ -26,6 +26,9 @@ var (
 
 	//FetchOp tells a chunk was/is fetched from a remote
 	FetchOp = Op("fetch")
+
+	//StageOd tells a chunk is staged locally
+	StagedOp = Op("stage")
 )
 
 //K are 32-byte chunk keys, de-duplicated lookups and

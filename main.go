@@ -20,7 +20,7 @@ func main() {
 	c.Commands = map[string]cli.CommandFactory{
 		"scan":    command.NewScan,
 		"split":   command.NewSplit,
-		"init":    command.NewInit,
+		"install": command.NewInstall,
 		"fetch":   command.NewFetch,
 		"pull":    command.NewPull,
 		"push":    command.NewPush,

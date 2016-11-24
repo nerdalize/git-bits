@@ -139,7 +139,7 @@ func NewRepository(dir string, output io.Writer) (repo *Repository, err error) {
 	repo.keyProgressCh = make(chan KeyOp, 1)
 	repo.KeyProgressFn = func(kop KeyOp) {
 		if kop.Skipped {
-			fmt.Fprintf(repo.output, "%x (already %sed)\n", kop.K, string(kop.Op))
+			fmt.Fprintf(repo.output, "%x (skip: already %s) \n", kop.K, strings.Replace(fmt.Sprintf("%sed", string(kop.Op)), "ee", "e", 1))
 		} else {
 			fmt.Fprintf(repo.output, "%x (%s)\n", kop.K, string(kop.Op))
 		}
@@ -859,11 +859,15 @@ func (repo *Repository) Split(r io.Reader, w io.Writer) (err error) {
 
 				//if its already written, all good; output key
 				if os.IsExist(err) {
+					repo.keyProgressCh <- KeyOp{StagedOp, k, true}
 					return printk(k)
 				}
 
 				return fmt.Errorf("Failed to open chunk file '%s' for writing: %v", p, err)
 			}
+
+			//report staging
+			repo.keyProgressCh <- KeyOp{StagedOp, k, false}
 
 			//aes encryption with
 			block, err := aes.NewCipher(k[:])
