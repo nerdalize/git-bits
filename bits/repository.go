@@ -16,7 +16,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/VividCortex/ewma"
+	"github.com/dustin/go-humanize"
 	"github.com/restic/chunker"
 )
 
@@ -63,7 +66,7 @@ type Repository struct {
 
 	//is called when a chunk was handled in any operation, can be called
 	//concurrently
-	KeyProgressFn func(KeyOp)
+	KeyProgressFn func(KeyOp, float64)
 }
 
 //NewRepository sets up an interface on top of a Git repository in the
@@ -135,18 +138,31 @@ func NewRepository(dir string, output io.Writer) (repo *Repository, err error) {
 		}
 	}
 
-	//start handling key progress
-	repo.keyProgressCh = make(chan KeyOp, 1)
-	repo.KeyProgressFn = func(kop KeyOp) {
+	//default output function will do basic logging of key progress
+	repo.KeyProgressFn = func(kop KeyOp, tp float64) {
 		if kop.Skipped {
-			fmt.Fprintf(repo.output, "%x (skip: already %s) \n", kop.K, strings.Replace(fmt.Sprintf("%sed", string(kop.Op)), "ee", "e", 1))
+			fmt.Fprintf(repo.output, "%x (skip: already %s)\n", kop.K, strings.Replace(fmt.Sprintf("%sed", string(kop.Op)), "ee", "e", 1))
 		} else {
-			fmt.Fprintf(repo.output, "%x (%s)\n", kop.K, string(kop.Op))
+			fmt.Fprintf(repo.output, "%x (%s) %s/s\n", kop.K, string(kop.Op), humanize.Bytes(uint64(tp)))
 		}
 	}
+
+	//we start handling key events while keeping a moving
+	//average for the number of bytes moving through
+	repo.keyProgressCh = make(chan KeyOp, 1)
 	go func() {
+		lastT := time.Now()
+		e := ewma.NewMovingAverage()
 		for kop := range repo.keyProgressCh {
-			repo.KeyProgressFn(kop)
+			nowT := time.Now()
+			diffD := nowT.Sub(lastT)
+			if kop.CopyN > 0 {
+				tp := float64(kop.CopyN) / diffD.Seconds()
+				e.Add(tp)
+			}
+
+			repo.KeyProgressFn(kop, e.Value())
+			lastT = nowT
 		}
 	}()
 
@@ -318,7 +334,8 @@ func (repo *Repository) Push(r io.Reader, remoteName string) (err error) {
 
 	//stream remote keys 500 at a time and write to local chunk store
 	//@TODO research http://stackoverflow.com/questions/495161/fast-disk-based-hashtables
-	//@TODO we actually want to store this in some memory-efficient bit array
+	//@TODO we actually want to store this in some memory-efficient bit array (memory mapped?)
+	//@TODO the keys are returned in lexo order, we could this to our advantage in opening pages
 	err = repo.ForEach(pr, func(k K) error {
 		rp, err := repo.Path(k, true, true)
 		if err != nil {
@@ -355,15 +372,12 @@ func (repo *Repository) Push(r io.Reader, remoteName string) (err error) {
 		if err != nil {
 			if os.IsExist(err) {
 				//index file already exists, we can skip push, yeey
-				repo.keyProgressCh <- KeyOp{PushOp, k, true}
+				repo.keyProgressCh <- KeyOp{PushOp, k, true, 0}
 				return nil
 			}
 
 			return fmt.Errorf("failed to write remote file for '%x': %v", k, err)
 		}
-
-		//indicate we'll be attempting to push the chunk
-		repo.keyProgressCh <- KeyOp{PushOp, k, false}
 
 		//always close the .r file, but if anything below fails,
 		//dont consider the chunk to be pushed and remove .r file
@@ -395,6 +409,8 @@ func (repo *Repository) Push(r io.Reader, remoteName string) (err error) {
 			return fmt.Errorf("failed to copy file '%s' to remote writer after %d bytes: %v", f.Name(), n, err)
 		}
 
+		//indicate we pushed the chunk
+		repo.keyProgressCh <- KeyOp{PushOp, k, false, n}
 		return nil
 	})
 
@@ -426,7 +442,7 @@ func (repo *Repository) Fetch(r io.Reader, w io.Writer) (err error) {
 		f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0666)
 		if err != nil {
 			if os.IsExist(err) {
-				repo.keyProgressCh <- KeyOp{FetchOp, k, true}
+				repo.keyProgressCh <- KeyOp{FetchOp, k, true, 0}
 				return printk(k)
 			}
 
@@ -437,19 +453,19 @@ func (repo *Repository) Fetch(r io.Reader, w io.Writer) (err error) {
 			return fmt.Errorf("key '%x' isn't stored locally, but no remote is configured", k)
 		}
 
-		//indicate we'll be attempting to fetch the key
-		repo.keyProgressCh <- KeyOp{FetchOp, k, false}
 		rc, err := repo.remote.ChunkReader(k)
 		if err != nil {
 			return fmt.Errorf("failed to get chunk reader for key '%x': %v", k, err)
 		}
 
 		defer rc.Close()
-		_, err = io.Copy(f, rc)
+		n, err := io.Copy(f, rc)
 		if err != nil {
 			return fmt.Errorf("failed to clone chunk '%x' from remote: %v", err)
 		}
 
+		//indicate we fetched a key
+		repo.keyProgressCh <- KeyOp{FetchOp, k, false, n}
 		return printk(k)
 	})
 }
@@ -859,15 +875,12 @@ func (repo *Repository) Split(r io.Reader, w io.Writer) (err error) {
 
 				//if its already written, all good; output key
 				if os.IsExist(err) {
-					repo.keyProgressCh <- KeyOp{StagedOp, k, true}
+					repo.keyProgressCh <- KeyOp{StagedOp, k, true, 0}
 					return printk(k)
 				}
 
 				return fmt.Errorf("Failed to open chunk file '%s' for writing: %v", p, err)
 			}
-
-			//report staging
-			repo.keyProgressCh <- KeyOp{StagedOp, k, false}
 
 			//aes encryption with
 			block, err := aes.NewCipher(k[:])
@@ -889,7 +902,8 @@ func (repo *Repository) Split(r io.Reader, w io.Writer) (err error) {
 				return fmt.Errorf("Failed to write chunk '%x' (wrote %d bytes): %v", k, n, err)
 			}
 
-			//output key
+			//report staging and output key
+			repo.keyProgressCh <- KeyOp{StagedOp, k, false, int64(n)}
 			return printk(k)
 		}()
 
@@ -925,11 +939,11 @@ func (repo *Repository) Combine(r io.Reader, w io.Writer) (err error) {
 		//@TODO	If the key is unique for each ciphertext, then it's ok to use a zero IV.
 		var iv [aes.BlockSize]byte
 		stream := cipher.NewOFB(block, iv[:])
-		encryptr := &cipher.StreamReader{S: stream, R: f}
+		decryptr := &cipher.StreamReader{S: stream, R: f}
 
 		//copy chunk bytes to output
 		defer f.Close()
-		n, err := io.Copy(w, encryptr)
+		n, err := io.Copy(w, decryptr)
 		if err != nil {
 			return fmt.Errorf("failed to copy chunk '%x' content after %d bytes: %v", k, n, err)
 		}

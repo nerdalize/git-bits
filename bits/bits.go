@@ -18,6 +18,7 @@ type KeyOp struct {
 	Op      Op
 	K       K
 	Skipped bool
+	CopyN   int64 //if any bytes were copied in the operation, its recorded here
 }
 
 var (
