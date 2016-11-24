@@ -173,11 +173,11 @@ func (repo *Repository) Git(ctx context.Context, in io.Reader, out io.Writer, ar
 	return nil
 }
 
-//Init will prepare a git repository for usage with git bits, it configures
+//Install will prepare a git repository for usage with git bits, it configures
 //filters, installs hooks and pulls chunks to write files in the current
 //working tree. A configuration struct can be provided to populate local
 //git configuration got future bits commands
-func (repo *Repository) Init(w io.Writer, conf *Conf) (err error) {
+func (repo *Repository) Install(w io.Writer, conf *Conf) (err error) {
 	ctx := context.Background()
 
 	//configure filter
@@ -216,10 +216,10 @@ func (repo *Repository) Init(w io.Writer, conf *Conf) (err error) {
 			repo.conf.AWSAccessKeyID,
 			repo.conf.AWSSecretAccessKey,
 		)
+
 		if err != nil {
 			return fmt.Errorf("unable to setup default chunk remote: %v", err)
 		}
-
 	}
 
 	//write configuration

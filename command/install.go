@@ -10,7 +10,7 @@ import (
 	"github.com/nerdalize/git-bits/bits"
 )
 
-var InitOpts struct {
+var InstallOpts struct {
 	// Name of the s3 bucket that will be configured for the remote
 	Bucket string `short:"b" long:"bucket" description:"name of the s3 bucket used as a chunk remote"`
 
@@ -18,12 +18,12 @@ var InitOpts struct {
 	Remote string `short:"r" long:"remote" default:"origin" required:"true" description:"git remote that will be configured for chunk storage (default=origin)"`
 }
 
-type Init struct {
+type Install struct {
 	ui cli.Ui
 }
 
-func NewInit() (cmd cli.Command, err error) {
-	return &Init{
+func NewInstall() (cmd cli.Command, err error) {
+	return &Install{
 		ui: &cli.BasicUi{
 			Reader:      os.Stdin,
 			Writer:      os.Stderr,
@@ -35,9 +35,9 @@ func NewInit() (cmd cli.Command, err error) {
 // Help returns long-form help text that includes the command-line
 // usage, a brief few sentences explaining the function of the command,
 // and the complete list of flags the command accepts.
-func (cmd *Init) Help() string {
+func (cmd *Install) Help() string {
 	parser := flags.NewNamedParser(cmd.Usage(), flags.PassDoubleDash)
-	_, err := parser.AddGroup("default", "", &InitOpts)
+	_, err := parser.AddGroup("default", "", &InstallOpts)
 	if err != nil {
 		panic(err)
 	}
@@ -53,20 +53,20 @@ func (cmd *Init) Help() string {
 
 // Synopsis returns a one-line, short synopsis of the command.
 // This should be less than 50 characters ideally.
-func (cmd *Init) Synopsis() string {
+func (cmd *Install) Synopsis() string {
 	return "configures filters, create pre-push hook and pull chunks"
 }
 
 // Usage returns a usage description
-func (cmd *Init) Usage() string {
+func (cmd *Install) Usage() string {
 	return "git bits init"
 }
 
 // Run runs the actual command with the given CLI instance and
 // command-line arguments. It returns the exit status when it is
 // finished.
-func (cmd *Init) Run(args []string) int {
-	args, err := flags.ParseArgs(&InitOpts, args)
+func (cmd *Install) Run(args []string) int {
+	args, err := flags.ParseArgs(&InstallOpts, args)
 	if err != nil {
 		cmd.ui.Error(fmt.Sprintf("failed to parse flags: %v", err))
 		return 1
@@ -103,7 +103,7 @@ func (cmd *Init) Run(args []string) int {
 		return 128
 	}
 
-	err = repo.Init(os.Stdout, conf)
+	err = repo.Install(os.Stdout, conf)
 	if err != nil {
 		cmd.ui.Error(fmt.Sprintf("failed to fetch: %v", err))
 		return 4
