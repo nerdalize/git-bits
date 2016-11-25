@@ -144,7 +144,7 @@ func TestSplitCombineScan(t *testing.T) {
 		"*.bin": "filter=bits",
 	})
 
-	err := repo1.Init(os.Stderr, bits.DefaultConf())
+	err := repo1.Install(os.Stderr, bits.DefaultConf())
 	if err != nil {
 		t.Error(err)
 	}
@@ -263,7 +263,7 @@ func TestPushFetch(t *testing.T) {
 	conf.AWSAccessKeyID = accessKey
 	conf.AWSSecretAccessKey = secretKey
 
-	err := repo1.Init(os.Stderr, conf)
+	err := repo1.Install(os.Stderr, conf)
 	if err != nil {
 		t.Error(err)
 	}
@@ -342,7 +342,7 @@ func TestPushFetch(t *testing.T) {
 		t.Error(err)
 	}
 
-	err = repo2.Init(os.Stderr, conf)
+	err = repo2.Install(os.Stderr, conf)
 	if err != nil {
 		t.Error(err)
 	}

@@ -1,10 +1,14 @@
-hash: d25dd05354ecac7929e70afbbaec1e43887e6e113bb01e1a9a10223eba40ef1e
-updated: 2016-11-23T11:03:00.259107018+01:00
+hash: 4fb003669fac10230575a0b78141ef639d6013a89171772914882a736b505d55
+updated: 2016-11-24T14:56:47.860739675+01:00
 imports:
 - name: github.com/armon/go-radix
   version: 4239b77079c7b5d1243b7b4736304ce8ddb6f0f2
 - name: github.com/bgentry/speakeasy
   version: 675b82c74c0ed12283ee81ba8a534c8982c07b85
+- name: github.com/boltdb/bolt
+  version: 0d9f544bb94aac29c185968483459ef74d6deb5d
+- name: github.com/dustin/go-humanize
+  version: bd88f87ad3a420f7bcf05e90566fd1ceb351fa7f
 - name: github.com/jessevdk/go-flags
   version: 8bc97d602c3bfeb5fc6fc9b5a9c898f245495637
 - name: github.com/mattn/go-isatty
@@ -15,6 +19,8 @@ imports:
   version: bb2ecf9a98e35a0b336ffc23fc515fb6e7961577
 - name: github.com/rlmcpherson/s3gof3r
   version: bc1aca74326ad100d0aa82bfa9ce6e9278620750
+- name: github.com/VividCortex/ewma
+  version: c595cd886c223c6c28fc9ae2727a61b5e4693d85
 - name: golang.org/x/sys
   version: c200b10b5d5e122be351b67af224adc6128af5bf
   subpackages:

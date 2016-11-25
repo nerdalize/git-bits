@@ -4,8 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
+	// "crypto/aes"
+	// "crypto/cipher"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -16,7 +16,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/VividCortex/ewma"
+	"github.com/boltdb/bolt"
+	"github.com/dustin/go-humanize"
 	"github.com/restic/chunker"
 )
 
@@ -26,6 +30,11 @@ var (
 
 	//RemoteBranchSuffix identifies the specialty branches used for persisting remote information
 	RemoteBranchSuffix = "bits-remote"
+)
+
+var (
+	//ChunksBucket is het name of the chunks bucket in our local store
+	ChunksBucket = []byte("chunks")
 )
 
 //Repository provides an abstraction on top of a Git repository for a
@@ -58,12 +67,14 @@ type Repository struct {
 	//bits specific configuration
 	conf *Conf
 
+	//we use memory mapped files for storing chunks locally and keeping the remote indexed
+	db *bolt.DB
+
 	//this channel receives any chunk Key that is hanled in an any operation
 	keyProgressCh chan KeyOp
 
-	//is called when a chunk was handled in any operation, can be called
-	//concurrently
-	KeyProgressFn func(KeyOp)
+	//is called when a chunk was handled in any operation, takes a keyop and throughput
+	KeyProgressFn func(KeyOp, float64)
 }
 
 //NewRepository sets up an interface on top of a Git repository in the
@@ -135,18 +146,31 @@ func NewRepository(dir string, output io.Writer) (repo *Repository, err error) {
 		}
 	}
 
-	//start handling key progress
-	repo.keyProgressCh = make(chan KeyOp, 1)
-	repo.KeyProgressFn = func(kop KeyOp) {
+	//default output function will do basic logging of key progress
+	repo.KeyProgressFn = func(kop KeyOp, tp float64) {
 		if kop.Skipped {
-			fmt.Fprintf(repo.output, "%x (already %sed)\n", kop.K, string(kop.Op))
+			fmt.Fprintf(repo.output, "%x (skip: already %s)\n", kop.K, strings.Replace(fmt.Sprintf("%sed", string(kop.Op)), "ee", "e", 1))
 		} else {
-			fmt.Fprintf(repo.output, "%x (%s)\n", kop.K, string(kop.Op))
+			fmt.Fprintf(repo.output, "%x (%s) %s/s\n", kop.K, string(kop.Op), humanize.Bytes(uint64(tp)))
 		}
 	}
+
+	//we start handling key events while keeping a moving
+	//average for the number of bytes moving through
+	repo.keyProgressCh = make(chan KeyOp, 1)
 	go func() {
+		lastT := time.Now()
+		e := ewma.NewMovingAverage()
 		for kop := range repo.keyProgressCh {
-			repo.KeyProgressFn(kop)
+			nowT := time.Now()
+			diffD := nowT.Sub(lastT)
+			if kop.CopyN > 0 {
+				tp := float64(kop.CopyN) / diffD.Seconds()
+				e.Add(tp)
+			}
+
+			repo.KeyProgressFn(kop, e.Value())
+			lastT = nowT
 		}
 	}()
 
@@ -173,17 +197,38 @@ func (repo *Repository) Git(ctx context.Context, in io.Reader, out io.Writer, ar
 	return nil
 }
 
-//Init will prepare a git repository for usage with git bits, it configures
+//LocalStore will return the local chunk store, creating it in the
+//repositories chunk directory if it doesnt exist yet. It creates
+//the necessary buckets if they dont exist yet
+func (repo *Repository) LocalStore() (db *bolt.DB, err error) {
+	dbpath := filepath.Join(repo.chunkDir, "a.chunks")
+	db, err = bolt.Open(dbpath, 0666, &bolt.Options{Timeout: 1 * time.Second})
+	if err != nil {
+		return nil, fmt.Errorf("failed to open chunks database '%s': %v", dbpath, err)
+	}
+
+	db.Update(func(tx *bolt.Tx) error {
+		_, err := tx.CreateBucketIfNotExists(ChunksBucket)
+		if err != nil {
+			return fmt.Errorf("failed to create bucket: %s", err)
+		}
+		return nil
+	})
+
+	return db, nil
+}
+
+//Install will prepare a git repository for usage with git bits, it configures
 //filters, installs hooks and pulls chunks to write files in the current
 //working tree. A configuration struct can be provided to populate local
 //git configuration got future bits commands
-func (repo *Repository) Init(w io.Writer, conf *Conf) (err error) {
+func (repo *Repository) Install(w io.Writer, conf *Conf) (err error) {
 	ctx := context.Background()
 
 	//configure filter
 	gconf := map[string]string{
 		"filter.bits.clean":    "git bits split",
-		"filter.bits.smudge":   "git bits fetch | git bits combine",
+		"filter.bits.smudge":   "git bits checkout",
 		"filter.bits.required": "true",
 	}
 
@@ -216,10 +261,10 @@ func (repo *Repository) Init(w io.Writer, conf *Conf) (err error) {
 			repo.conf.AWSAccessKeyID,
 			repo.conf.AWSSecretAccessKey,
 		)
+
 		if err != nil {
 			return fmt.Errorf("unable to setup default chunk remote: %v", err)
 		}
-
 	}
 
 	//write configuration
@@ -316,9 +361,10 @@ func (repo *Repository) Push(r io.Reader, remoteName string) (err error) {
 		}
 	}()
 
-	//stream remote keys 500 at a time and write to local chunk store
+	//stream remote keys 500 at a time and write to remote chunk store
 	//@TODO research http://stackoverflow.com/questions/495161/fast-disk-based-hashtables
-	//@TODO we actually want to store this in some memory-efficient bit array
+	//@TODO we actually want to store this in some memory-efficient bit array (memory mapped?)
+	//@TODO the keys are returned in lexo order, we could this to our advantage in opening pages
 	err = repo.ForEach(pr, func(k K) error {
 		rp, err := repo.Path(k, true, true)
 		if err != nil {
@@ -341,7 +387,14 @@ func (repo *Repository) Push(r io.Reader, remoteName string) (err error) {
 		return fmt.Errorf("failed to scan remote keys: %v", err)
 	}
 
+	//start pushing keys
+	lstore, err := repo.LocalStore()
+	if err != nil {
+		return err
+	}
+
 	//scan for chunk keys
+	defer lstore.Close()
 	err = repo.ForEach(r, func(k K) (ferr error) {
 
 		//the .r file indicates the remote has this chunk
@@ -355,15 +408,12 @@ func (repo *Repository) Push(r io.Reader, remoteName string) (err error) {
 		if err != nil {
 			if os.IsExist(err) {
 				//index file already exists, we can skip push, yeey
-				repo.keyProgressCh <- KeyOp{PushOp, k, true}
+				repo.keyProgressCh <- KeyOp{PushOp, k, true, 0}
 				return nil
 			}
 
 			return fmt.Errorf("failed to write remote file for '%x': %v", k, err)
 		}
-
-		//indicate we'll be attempting to push the chunk
-		repo.keyProgressCh <- KeyOp{PushOp, k, false}
 
 		//always close the .r file, but if anything below fails,
 		//dont consider the chunk to be pushed and remove .r file
@@ -374,27 +424,59 @@ func (repo *Repository) Push(r io.Reader, remoteName string) (err error) {
 			}
 		}()
 
+		////////// MMAP /////////
+
+		err = lstore.Update(func(tx *bolt.Tx) error {
+			b := tx.Bucket(ChunksBucket)
+			c := b.Get(k[:])
+			if c == nil {
+				return fmt.Errorf("chunk '%x' couldn't be found locally", k)
+			}
+
+			wc, err := repo.remote.ChunkWriter(k)
+			if err != nil {
+				return fmt.Errorf("failed to get chunk writer: %v", err)
+			}
+
+			defer wc.Close()
+			n, err := wc.Write(c)
+			if err != nil {
+				return fmt.Errorf("failed to write chunk '%x' to remote writer: %v", k, err)
+			}
+
+			repo.keyProgressCh <- KeyOp{PushOp, k, false, int64(n)}
+			return nil
+		})
+
+		if err != nil {
+			return fmt.Errorf("failed to push chunk '%x': %v", k, err)
+		}
+
+		////////// MMAP /////////
+
 		//open local chunk file
-		p, _ := repo.Path(k, false, false)
-		f, err := os.OpenFile(p, os.O_RDONLY, 0666)
-		if err != nil {
-			return fmt.Errorf("failed to open chunk '%x' at '%s' for pushing: %v", k, p, err)
-		}
-
-		//get remote writer
-		defer f.Close()
-		wc, err := repo.remote.ChunkWriter(k)
-		if err != nil {
-			return fmt.Errorf("failed to get chunk writer: %v", err)
-		}
-
-		//start upload
-		defer wc.Close()
-		n, err := io.Copy(wc, f)
-		if err != nil {
-			return fmt.Errorf("failed to copy file '%s' to remote writer after %d bytes: %v", f.Name(), n, err)
-		}
-
+		// p, _ := repo.Path(k, false, false)
+		// f, err := os.OpenFile(p, os.O_RDONLY, 0666)
+		// if err != nil {
+		// 	return fmt.Errorf("failed to open chunk '%x' at '%s' for pushing: %v", k, p, err)
+		// }
+		//
+		// //get remote writer
+		// defer f.Close()
+		// wc, err := repo.remote.ChunkWriter(k)
+		// if err != nil {
+		// 	return fmt.Errorf("failed to get chunk writer: %v", err)
+		// }
+		//
+		// //start upload
+		// defer wc.Close()
+		// n, err := io.Copy(wc, f)
+		// if err != nil {
+		// 	return fmt.Errorf("failed to copy file '%s' to remote writer after %d bytes: %v", f.Name(), n, err)
+		// }
+		//
+		// //indicate we pushed the chunk
+		// repo.keyProgressCh <- KeyOp{PushOp, k, false, n}
 		return nil
 	})
 
@@ -408,49 +490,108 @@ func (repo *Repository) Push(r io.Reader, remoteName string) (err error) {
 //Fetch takes a list of chunk keys on reader 'r' and will try to fetch chunks
 //that are not yet stored locally. Chunks that are already stored locally should
 //result in a no-op, all keys (fetched or not) will be written to 'w'.
-func (repo *Repository) Fetch(r io.Reader, w io.Writer) (err error) {
+func (repo *Repository) Fetch(lstore *bolt.DB, r io.Reader, w io.Writer) (err error) {
 	printk := func(k K) error {
 		_, err := fmt.Fprintf(w, "%x\n", k)
 		return err
 	}
 
-	return repo.ForEach(r, func(k K) error {
-
-		//setup chunk path
-		p, err := repo.Path(k, true, false)
+	//if not lstore is provided, open one
+	if lstore == nil {
+		lstore, err := repo.LocalStore()
 		if err != nil {
-			return fmt.Errorf("failed to create chunk path for key '%x': %v", k, err)
+			return err
 		}
 
-		//attempt to open, if its already assume it was written concurrently
-		f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0666)
-		if err != nil {
-			if os.IsExist(err) {
-				repo.keyProgressCh <- KeyOp{FetchOp, k, true}
+		defer lstore.Close()
+	}
+
+	//scan for chunk keys
+	return repo.ForEach(r, func(k K) error {
+		fmt.Fprintf(os.Stderr, "FETCH %x\n", k)
+		defer fmt.Fprintf(os.Stderr, "FETCHED %x\n", k)
+
+		////////// MMAP /////////
+
+		err = lstore.Update(func(tx *bolt.Tx) error {
+			fmt.Fprintf(os.Stderr, "FETCH UPDATE %x\n", k)
+			defer fmt.Fprintf(os.Stderr, "FETCH UPDATED %x\n", k)
+
+			b := tx.Bucket(ChunksBucket)
+			c := b.Get(k[:])
+			if c != nil {
+				repo.keyProgressCh <- KeyOp{FetchOp, k, true, 0}
 				return printk(k)
 			}
 
-			return fmt.Errorf("failed to open chunk file '%s' for writing: %v", p, err)
-		}
+			if repo.remote == nil {
+				return fmt.Errorf("key '%x' isn't stored locally, but no remote is configured", k)
+			}
 
-		if repo.remote == nil {
-			return fmt.Errorf("key '%x' isn't stored locally, but no remote is configured", k)
-		}
+			rc, err := repo.remote.ChunkReader(k)
+			if err != nil {
+				return fmt.Errorf("failed to get chunk reader for key '%x': %v", k, err)
+			}
 
-		//indicate we'll be attempting to fetch the key
-		repo.keyProgressCh <- KeyOp{FetchOp, k, false}
-		rc, err := repo.remote.ChunkReader(k)
+			defer rc.Close()
+			buf := bytes.NewBuffer(nil)
+			fmt.Fprintf(os.Stderr, "FETCH COPY %x\n", k)
+			n, err := io.Copy(buf, rc)
+			defer fmt.Fprintf(os.Stderr, "FETCH COPIED %x\n", k)
+			if err != nil {
+				return fmt.Errorf("failed to buffer chunk '%x': %v", k, err)
+			}
+
+			err = b.Put(k[:], buf.Bytes())
+			if err != nil {
+				return fmt.Errorf("failed to store chunk '%x': %v", k, err)
+			}
+
+			repo.keyProgressCh <- KeyOp{FetchOp, k, false, n}
+			return printk(k)
+		})
+
 		if err != nil {
-			return fmt.Errorf("failed to get chunk reader for key '%x': %v", k, err)
+			return fmt.Errorf("failed to fetch chunk '%x': %v", k, err)
 		}
 
-		defer rc.Close()
-		_, err = io.Copy(f, rc)
-		if err != nil {
-			return fmt.Errorf("failed to clone chunk '%x' from remote: %v", err)
-		}
+		////////// MMAP /////////
 
-		return printk(k)
+		//setup chunk path
+		// p, err := repo.Path(k, true, false)
+		// if err != nil {
+		// 	return fmt.Errorf("failed to create chunk path for key '%x': %v", k, err)
+		// }
+		//
+		// //attempt to open, if its already assume it was written concurrently
+		// f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0666)
+		// if err != nil {
+		// 	if os.IsExist(err) {
+		// 		repo.keyProgressCh <- KeyOp{FetchOp, k, true, 0}
+		// 		return printk(k)
+		// 	}
+		//
+		// 	return fmt.Errorf("failed to open chunk file '%s' for writing: %v", p, err)
+		// }
+
+		// if repo.remote == nil {
+		// 	return fmt.Errorf("key '%x' isn't stored locally, but no remote is configured", k)
+		// }
+		//
+		// rc, err := repo.remote.ChunkReader(k)
+		// if err != nil {
+		// 	return fmt.Errorf("failed to get chunk reader for key '%x': %v", k, err)
+		// }
+		//
+		// defer rc.Close()
+		// n, err := io.Copy(f, rc)
+		// if err != nil {
+		// 	return fmt.Errorf("failed to clone chunk '%x' from remote: %v", err)
+		// }
+		//
+		// //indicate we fetched a key
+		// repo.keyProgressCh <- KeyOp{FetchOp, k, false, n}
+		return nil
 	})
 }
 
@@ -539,12 +680,19 @@ func (repo *Repository) Pull(ref string, w io.Writer) (err error) {
 		}
 	}()
 
+	lstore, err := repo.LocalStore()
+	if err != nil {
+		errCh <- err
+	}
+
+	defer lstore.Close()
 	go func() {
+
 		defer w3.Close()
 		s := bufio.NewScanner(r2)
 		for s.Scan() {
+			fpath := filepath.Join(repo.rootDir, s.Text())
 			err = func() error {
-				fpath := filepath.Join(repo.rootDir, s.Text())
 				f, err := os.OpenFile(fpath, os.O_RDWR|os.O_CREATE, 0666)
 				if err != nil {
 					return err
@@ -584,20 +732,29 @@ func (repo *Repository) Pull(ref string, w io.Writer) (err error) {
 					return fmt.Errorf("failed to modify temp file permissions: %v", err)
 				}
 
-				pr, pw := io.Pipe()
-				go func() {
-					defer pw.Close()
-					err = repo.Fetch(f, pw)
-					if err != nil {
-						errCh <- err
-					}
-				}()
-
-				defer tmpf.Close()
-				err = repo.Combine(pr, tmpf)
+				//checkout wile pulling
+				fmt.Fprintf(os.Stderr, "AAAA1\n")
+				err = repo.Checkout(lstore, f, tmpf)
 				if err != nil {
-					return fmt.Errorf("failed to combine: %v", err)
+					return fmt.Errorf("failed to checkout: %v", err)
 				}
+				fmt.Fprintf(os.Stderr, "AAAA2\n")
+
+				// pr, pw := io.Pipe()
+				// go func() {
+				// 	defer pw.Close()
+				// 	err = repo.Fetch(lstore, f, pw)
+				// 	if err != nil {
+				// 		errCh <- fmt.Errorf("failed to fetch: %v", err)
+				// 	}
+				// }()
+				//
+				// defer tmpf.Close()
+				// fmt.Fprintf(os.Stderr, "Combining '%s' tmpf: '%s'\n", fpath, tmpf.Name())
+				// err = repo.Combine(lstore, pr, tmpf)
+				// if err != nil {
+				// 	return fmt.Errorf("failed to combine: %v", err)
+				// }
 
 				err = os.Remove(fpath)
 				if err != nil {
@@ -614,7 +771,7 @@ func (repo *Repository) Pull(ref string, w io.Writer) (err error) {
 			}()
 
 			if err != nil {
-				errCh <- fmt.Errorf("failed to check file '%s' for header content: %v", err)
+				errCh <- fmt.Errorf("failed to check file '%s' for header content: %v", fpath, err)
 			}
 		}
 	}()
@@ -795,9 +952,70 @@ func (repo *Repository) Scan(left, right string, w io.Writer) (err error) {
 	return nil
 }
 
+//Checkout allows running fetch and combine in the same proccess while having
+//the local store memory mapped
+func (repo *Repository) Checkout(lstore *bolt.DB, r io.Reader, w io.Writer) (err error) {
+	if lstore == nil {
+		lstore, err := repo.LocalStore()
+		if err != nil {
+			return err
+		}
+
+		defer lstore.Close()
+	}
+
+	// fetch | combine | f1
+	r1, w1 := io.Pipe()
+	r2, w2 := io.Pipe()
+	errs := []string{}
+	errCh := make(chan error)
+	defer close(errCh)
+	go func() {
+		for err := range errCh {
+			errs = append(errs, fmt.Sprintf("%v", err))
+		}
+	}()
+
+	//furn fetch
+	go func() {
+		defer w1.Close()
+		fmt.Fprintf(os.Stderr, "BBBBB1\n")
+		err = repo.Fetch(lstore, r, w1)
+		fmt.Fprintf(os.Stderr, "BBBBB2\n")
+		if err != nil {
+			errCh <- fmt.Errorf("failed to fetch: %v", err)
+		}
+	}()
+
+	//pipe fetch output into combine
+	go func() {
+		defer w2.Close()
+		fmt.Fprintf(os.Stderr, "CCCCC1\n")
+		err = repo.Combine(lstore, r1, w2)
+		if err != nil {
+			errCh <- fmt.Errorf("failed to combine: %v", err)
+		}
+	}()
+
+	s := bufio.NewScanner(r2)
+	for s.Scan() {
+		w.Write(s.Bytes())
+	}
+
+	if err = s.Err(); err != nil {
+		return fmt.Errorf("failed to checkout scan: %v", err)
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("checkout failed: \n %s", strings.Join(errs, "\n\t"))
+	}
+
+	return nil
+}
+
 //Split turns a plain bytes from 'r' into encrypted, deduplicated and persisted chunks
-//while outputting keys for those chunks on writer 'w'. Chunks are written to a local chunk
-//space, pushing these to a remote store happens at a later time (pre-push hook)
+//while outputting keys for those chunks on writer 'w'. Chunks are written to the local
+//store, pushing these to a remote store happens at a later time (pre-push hook)
 func (repo *Repository) Split(r io.Reader, w io.Writer) (err error) {
 	if repo.conf.DeduplicationScope == 0 {
 		return fmt.Errorf("no deduplication scope configured, please run init", err)
@@ -821,7 +1039,14 @@ func (repo *Repository) Split(r io.Reader, w io.Writer) (err error) {
 	w.Write(repo.header)
 	defer w.Write(repo.footer)
 
+	//open the local store, we're gonna do some chunking
+	lstore, err := repo.LocalStore()
+	if err != nil {
+		return err
+	}
+
 	//write actual chunks
+	defer lstore.Close()
 	chunkr := chunker.New(bufr, chunker.Pol(repo.conf.DeduplicationScope))
 	buf := make([]byte, ChunkBufferSize)
 	for {
@@ -845,53 +1070,86 @@ func (repo *Repository) Split(r io.Reader, w io.Writer) (err error) {
 			return nil
 		}
 
-		err = func() error {
+		////////////// MMAP  //////////////
 
-			//formulate path
-			p, err := repo.Path(k, true, false)
-			if err != nil {
-				return fmt.Errorf("failed to create chunk dir for '%x': %v", k, err)
+		//write chunk locally
+		err = lstore.Update(func(tx *bolt.Tx) error {
+			b := tx.Bucket(ChunksBucket)
+			c := b.Get(k[:])
+			if c != nil {
+				repo.keyProgressCh <- KeyOp{StagedOp, k, true, 0}
+				return printk(k)
 			}
 
-			//attempt to open, create if nont existing
-			f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0666)
+			err = b.Put(k[:], chunk.Data)
 			if err != nil {
-
-				//if its already written, all good; output key
-				if os.IsExist(err) {
-					return printk(k)
-				}
-
-				return fmt.Errorf("Failed to open chunk file '%s' for writing: %v", p, err)
+				return fmt.Errorf("failed to put '%x': %v", k, err)
 			}
 
-			//aes encryption with
-			block, err := aes.NewCipher(k[:])
-			if err != nil {
-				return fmt.Errorf("failed to create cipher for key '%x': %v", k, err)
-			}
-
-			//create encrypt writer
-			//@TODO use GCM cipher mode
-			//@TODO	If the key is unique for each ciphertext, then it's ok to use a zero IV.
-			defer f.Close()
-			var iv [aes.BlockSize]byte
-			stream := cipher.NewOFB(block, iv[:])
-			encryptw := &cipher.StreamWriter{S: stream, W: f}
-
-			//encrypt and write to file
-			n, err := encryptw.Write(chunk.Data)
-			if err != nil {
-				return fmt.Errorf("Failed to write chunk '%x' (wrote %d bytes): %v", k, n, err)
-			}
-
-			//output key
+			repo.keyProgressCh <- KeyOp{StagedOp, k, false, int64(len(chunk.Data))}
 			return printk(k)
-		}()
+		})
 
 		if err != nil {
-			return fmt.Errorf("Failed to split chunk '%x': %v", k, err)
+			return fmt.Errorf("failed to write chunk to the local store: %v", err)
 		}
+
+		////////////// MMAP  //////////////
+		// err = func() error {
+		//
+		// 	// //formulate path
+		// 	// p, err := repo.Path(k, true, false)
+		// 	// if err != nil {
+		// 	// 	return fmt.Errorf("failed to create chunk dir for '%x': %v", k, err)
+		// 	// }
+		// 	//
+		// 	// //attempt to open, create if nont existing
+		// 	// f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0666)
+		// 	// if err != nil {
+		// 	//
+		// 	// 	//if its already written, all good; output key
+		// 	// 	if os.IsExist(err) {
+		// 	// 		repo.keyProgressCh <- KeyOp{StagedOp, k, true, 0}
+		// 	// 		return printk(k)
+		// 	// 	}
+		// 	//
+		// 	// 	return fmt.Errorf("Failed to open chunk file '%s' for writing: %v", p, err)
+		// 	// }
+		//
+		// 	//aes encryption with
+		// 	// block, err := aes.NewCipher(k[:])
+		// 	// if err != nil {
+		// 	// 	return fmt.Errorf("failed to create cipher for key '%x': %v", k, err)
+		// 	// }
+		// 	//
+		// 	// //create encrypt writer
+		// 	// //@TODO use GCM cipher mode
+		// 	// //@TODO	If the key is unique for each ciphertext, then it's ok to use a zero IV.
+		// 	// defer f.Close()
+		// 	// var iv [aes.BlockSize]byte
+		// 	// stream := cipher.NewOFB(block, iv[:])
+		// 	// encryptw := &cipher.StreamWriter{S: stream, W: f}
+		// 	//
+		// 	// //encrypt and write to file
+		// 	// n, err := encryptw.Write(chunk.Data)
+		// 	// if err != nil {
+		// 	// 	return fmt.Errorf("Failed to write chunk '%x' (wrote %d bytes): %v", k, n, err)
+		// 	// }
+		//
+		// 	//@TODO Re-enable encryption
+		// 	// n, err := f.Write(chunk.Data)
+		// 	// if err != nil {
+		// 	// 	return fmt.Errorf("failed to write chunk locally: %v", err)
+		// 	// }
+		//
+		// 	//report staging and output key
+		// 	repo.keyProgressCh <- KeyOp{StagedOp, k, false, int64(n)}
+		// 	return printk(k)
+		// }()
+		//
+		// if err != nil {
+		// 	return fmt.Errorf("Failed to split chunk '%x': %v", k, err)
+		// }
 	}
 
 	return nil
@@ -900,35 +1158,76 @@ func (repo *Repository) Split(r io.Reader, w io.Writer) (err error) {
 //Combine turns a newline seperated list of chunk keys from 'r' by reading the the
 //projects local store. Chunks are then decrypted and combined in the original
 //file and written to writer 'w'
-func (repo *Repository) Combine(r io.Reader, w io.Writer) (err error) {
+func (repo *Repository) Combine(lstore *bolt.DB, r io.Reader, w io.Writer) (err error) {
+	if lstore == nil {
+		lstore, err := repo.LocalStore()
+		if err != nil {
+			return err
+		}
+
+		defer lstore.Close()
+	}
+
 	err = repo.ForEach(r, func(k K) error {
+		fmt.Fprintf(os.Stderr, "COMBINE %x \n", k)
+
+		////////////// MMAP  //////////////
+		err = lstore.View(func(tx *bolt.Tx) error {
+			b := tx.Bucket(ChunksBucket)
+			c := b.Get(k[:])
+			if c == nil {
+				return fmt.Errorf("chunk '%x' couldn't be found locally", k)
+			}
+
+			buf := bytes.NewBuffer(c)
+			_, err := io.Copy(w, buf)
+			// _, err := w.Write(c)
+			if err != nil {
+				return fmt.Errorf("failed to write chunk '%x': %v", k, err)
+			}
+
+			return nil
+		})
+
+		defer fmt.Fprintf(os.Stderr, "COMBINED %x \n", k)
+
+		if err != nil {
+			return fmt.Errorf("failed to read chunk '%x' from local store: %v", k, err)
+		}
+
+		////////////// MMAP  //////////////
 
 		//open chunk file
-		p, _ := repo.Path(k, false, false)
-		f, err := os.OpenFile(p, os.O_RDONLY, 0666)
-		if err != nil {
-			return fmt.Errorf("failed to open chunk '%x' locally at '%s': %v", k, p, err)
-		}
+		// p, _ := repo.Path(k, false, false)
+		// f, err := os.OpenFile(p, os.O_RDONLY, 0666)
+		// if err != nil {
+		// 	return fmt.Errorf("failed to open chunk '%x' locally at '%s': %v", k, p, err)
+		// }
 
 		//setup aes cipher
-		block, err := aes.NewCipher(k[:])
-		if err != nil {
-			return fmt.Errorf("failed to create cipher: %v", err)
-		}
+		// block, err := aes.NewCipher(k[:])
+		// if err != nil {
+		// 	return fmt.Errorf("failed to create cipher: %v", err)
+		// }
+		//
+		// //setup the read stream
+		// //@TODO use GCM cipher mode
+		// //@TODO	If the key is unique for each ciphertext, then it's ok to use a zero IV.
+		// var iv [aes.BlockSize]byte
+		// stream := cipher.NewOFB(block, iv[:])
+		// decryptr := &cipher.StreamReader{S: stream, R: f}
+		//
+		// //copy chunk bytes to output
+		// defer f.Close()
+		// n, err := io.Copy(w, decryptr)
+		// if err != nil {
+		// 	return fmt.Errorf("failed to copy chunk '%x' content after %d bytes: %v", k, n, err)
+		// }
 
-		//setup the read stream
-		//@TODO use GCM cipher mode
-		//@TODO	If the key is unique for each ciphertext, then it's ok to use a zero IV.
-		var iv [aes.BlockSize]byte
-		stream := cipher.NewOFB(block, iv[:])
-		encryptr := &cipher.StreamReader{S: stream, R: f}
-
-		//copy chunk bytes to output
-		defer f.Close()
-		n, err := io.Copy(w, encryptr)
-		if err != nil {
-			return fmt.Errorf("failed to copy chunk '%x' content after %d bytes: %v", k, n, err)
-		}
+		// n, err := io.Copy(w, f)
+		// if err != nil {
+		// 	return fmt.Errorf("failed to copy chunk '%x' content after %d bytes: %v", k, n, err)
+		// }
 
 		return nil
 	})

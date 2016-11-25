@@ -18,6 +18,7 @@ type KeyOp struct {
 	Op      Op
 	K       K
 	Skipped bool
+	CopyN   int64 //if any bytes were copied in the operation, its recorded here
 }
 
 var (
@@ -26,6 +27,9 @@ var (
 
 	//FetchOp tells a chunk was/is fetched from a remote
 	FetchOp = Op("fetch")
+
+	//StageOd tells a chunk is staged locally
+	StagedOp = Op("stage")
 )
 
 //K are 32-byte chunk keys, de-duplicated lookups and

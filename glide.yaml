@@ -8,3 +8,9 @@ import:
   version: bc1aca74326ad100d0aa82bfa9ce6e9278620750
 - package: github.com/jessevdk/go-flags             #flexible flag parsing
   version: 8bc97d602c3bfeb5fc6fc9b5a9c898f245495637
+- package: github.com/VividCortex/ewma              #exp weighted moving avg
+  version: c595cd886c223c6c28fc9ae2727a61b5e4693d85
+- package: github.com/dustin/go-humanize            #humanize bytesize outputs
+  version: bd88f87ad3a420f7bcf05e90566fd1ceb351fa7f
+- package: github.com/boltdb/bolt                   #memory mapped k/v store
+  version: 0d9f544bb94aac29c185968483459ef74d6deb5d

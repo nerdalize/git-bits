@@ -53,10 +53,17 @@ func (cmd *Combine) Run(args []string) int {
 		return 2
 	}
 
-	err = repo.Combine(os.Stdin, os.Stdout)
+	lstore, err := repo.LocalStore()
+	if err != nil {
+		cmd.ui.Error(fmt.Sprintf("failed to open local store: %v", err))
+		return 3
+	}
+
+	defer lstore.Close()
+	err = repo.Combine(lstore, os.Stdin, os.Stdout)
 	if err != nil {
 		cmd.ui.Error(fmt.Sprintf("failed to combine: %v", err))
-		return 3
+		return 4
 	}
 
 	return 0
