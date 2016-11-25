@@ -1,10 +1,12 @@
-hash: 9ffae530e74f015141b83dcadb39a947270e959822ef16119a29a5a4b869369f
-updated: 2016-11-24T12:22:52.291146705+01:00
+hash: 4fb003669fac10230575a0b78141ef639d6013a89171772914882a736b505d55
+updated: 2016-11-25T15:08:32.306532946+01:00
 imports:
 - name: github.com/armon/go-radix
   version: 4239b77079c7b5d1243b7b4736304ce8ddb6f0f2
 - name: github.com/bgentry/speakeasy
   version: 675b82c74c0ed12283ee81ba8a534c8982c07b85
+- name: github.com/boltdb/bolt
+  version: 0d9f544bb94aac29c185968483459ef74d6deb5d
 - name: github.com/dustin/go-humanize
   version: bd88f87ad3a420f7bcf05e90566fd1ceb351fa7f
 - name: github.com/jessevdk/go-flags

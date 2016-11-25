@@ -12,3 +12,5 @@ import:
   version: c595cd886c223c6c28fc9ae2727a61b5e4693d85
 - package: github.com/dustin/go-humanize            #humanize bytesize outputs
   version: bd88f87ad3a420f7bcf05e90566fd1ceb351fa7f
+- package: github.com/boltdb/bolt                   #mmap embedded kv store
+  version: 0d9f544bb94aac29c185968483459ef74d6deb5d
