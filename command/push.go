@@ -53,7 +53,14 @@ func (cmd *Push) Run(args []string) int {
 		return 2
 	}
 
-	err = repo.Push(os.Stdin, "origin")
+	store, err := repo.LocalStore()
+	if err != nil {
+		cmd.ui.Error(fmt.Sprintf("failed to open local store: %v", err))
+		return 3
+	}
+
+	defer store.Close()
+	err = repo.Push(store, os.Stdin, "origin")
 	if err != nil {
 		cmd.ui.Error(fmt.Sprintf("failed to push: %v", err))
 		return 3

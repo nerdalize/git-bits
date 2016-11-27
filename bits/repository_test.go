@@ -140,11 +140,18 @@ func TestSplitCombineScan(t *testing.T) {
 
 	remote1 := GitInitRemote(t)
 	wd1, repo1 := GitCloneWorkspace(remote1, t)
+	lstore1, err := repo1.LocalStore()
+	if err != nil {
+		t.Error(err)
+	}
+
+	fmt.Println(lstore1.Path())
+	defer lstore1.Close()
 	WriteGitAttrFile(t, wd1, map[string]string{
 		"*.bin": "filter=bits",
 	})
 
-	err := repo1.Install(os.Stderr, bits.DefaultConf())
+	err = repo1.Install(os.Stderr, bits.DefaultConf())
 	if err != nil {
 		t.Error(err)
 	}
@@ -239,6 +246,11 @@ func TestPushFetch(t *testing.T) {
 
 	remote1 := GitInitRemote(t)
 	wd1, repo1 := GitCloneWorkspace(remote1, t)
+	lstore1, err := repo1.LocalStore()
+	if err != nil {
+		t.Error(err)
+	}
+
 	WriteGitAttrFile(t, wd1, map[string]string{
 		"*.bin": "filter=bits",
 	})
@@ -263,11 +275,12 @@ func TestPushFetch(t *testing.T) {
 	conf.AWSAccessKeyID = accessKey
 	conf.AWSSecretAccessKey = secretKey
 
-	err := repo1.Install(os.Stderr, conf)
+	err = repo1.Install(os.Stderr, conf)
 	if err != nil {
 		t.Error(err)
 	}
 
+	lstore1.Close()
 	fname := " with space.bin"
 	fsize := int64(5 * 1024 * 1024)
 	fpath := filepath.Join(wd1, fname)
@@ -333,6 +346,12 @@ func TestPushFetch(t *testing.T) {
 	}
 
 	wd2, repo2 := GitCloneWorkspace(remote1, t)
+	lstore2, err := repo2.LocalStore()
+	if err != nil {
+		t.Error(err)
+	}
+
+	defer lstore2.Close()
 	WriteGitAttrFile(t, wd2, map[string]string{
 		"*.bin": "filter=bits",
 	})
