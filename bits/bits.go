@@ -29,7 +29,10 @@ var (
 	FetchOp = Op("fetch")
 
 	//StageOd tells a chunk is staged locally
-	StagedOp = Op("stage")
+	StageOp = Op("stage")
+
+	//IndexOp tells a remote chunk is indexed
+	IndexOp = Op("index")
 )
 
 //K are 32-byte chunk keys, de-duplicated lookups and

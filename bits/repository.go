@@ -153,7 +153,39 @@ func NewRepository(dir string, output io.Writer) (repo *Repository, err error) {
 	}
 
 	//default output function will do basic logging of key progress
+	indexBucketMax := 500
+	indexedTotalKeys := 0
 	repo.KeyProgressFn = func(kop KeyOp, tp float64) {
+		if kop.Op == IndexOp {
+			indexedTotalKeys++
+			if indexedTotalKeys%indexBucketMax == 0 {
+				fmt.Fprintf(repo.output, "indexed %d remote chunks, total: ~%s\n", indexBucketMax, humanize.FormatInteger("#.", indexedTotalKeys))
+			}
+
+			return
+		}
+
+		if kop.Op != IndexOp && indexedTotalKeys > 0 {
+			fmt.Fprintf(repo.output, "indexing of remote chunks ended, total: ~%s+\n", humanize.FormatInteger("#.", indexedTotalKeys))
+			indexedTotalKeys = 0
+		}
+
+		// //all key files have a size that is the exact multiple of
+		// //33 bytes: 32 bytes hex encoded hashes with a newline character
+		// if objSize%int64(hex.EncodedLen(KeySize)+1) != 0 {
+		// 	continue
+		// }
+		//
+		//
+		// if indexedTotalKeys
+
+		//
+		// if (indexedBucketKeys > 0 && indexedBucketKeys >= indexBucketMax) || (indexedBucketKeys > 0 && kop.Op != IndexOp) {
+		// 	indexedTotalKeys += indexedBucketKeys
+		// 	fmt.Fprintf(repo.output, "Indexed %d remote chunks (total: %d)\n", indexedBucketKeys, indexedTotalKeys)
+		// 	indexedBucketKeys = 0
+		// }
+
 		if kop.Skipped {
 			fmt.Fprintf(repo.output, "%x (skip: already %s)\n", kop.K, strings.Replace(fmt.Sprintf("%sed", string(kop.Op)), "ee", "e", 1))
 		} else {
@@ -330,7 +362,8 @@ func (repo *Repository) ForEach(r io.Reader, fn func(K) error) error {
 }
 
 //Push takes a list of chunk keys on reader 'r' and moves each chunk from
-//the local storage to the remote store with name 'remote'.
+//the local storage to the remote store with name 'remote'. Prior to pushing
+//the local index of the remote is updated so chunks are not uploaded twice.
 func (repo *Repository) Push(store *bolt.DB, r io.Reader, remoteName string) (err error) {
 	if repo.remote == nil {
 		return fmt.Errorf("unable to push, no remote configured")
@@ -356,21 +389,22 @@ func (repo *Repository) Push(store *bolt.DB, r io.Reader, remoteName string) (er
 		}
 	}()
 
-	//stream remote keys 500 at a time and write to local chunk store
-	//@TODO research http://stackoverflow.com/questions/495161/fast-disk-based-hashtables
-	//@TODO we actually want to store this in some memory-efficient bit array (memory mapped?)
-	//@TODO the keys are returned in lexo order, we could this to our advantage in opening pages
+	//stream remote keys 500 at a time and write to local index concurrently
+	//allowing some to be oppertunisticly combined to increase performance
 	var wg sync.WaitGroup
 	repo.ForEach(pr, func(k K) error {
-
-		//concurrent batch calls are opportunisticly combined
-		//into the same transaction
 		go func() {
 			err = store.Batch(func(tx *bolt.Tx) error {
 				wg.Add(1)
 				defer wg.Done()
 				b := tx.Bucket(IndexBucket)
-				return b.Put(k[:], RemoteChunk)
+				err = b.Put(k[:], RemoteChunk)
+				if err != nil {
+					return fmt.Errorf("failed to put '%x': %v", k, err)
+				}
+
+				repo.keyProgressCh <- KeyOp{IndexOp, k, false, 0}
+				return nil
 			})
 
 			if err != nil {
@@ -379,23 +413,6 @@ func (repo *Repository) Push(store *bolt.DB, r io.Reader, remoteName string) (er
 		}()
 
 		return nil
-
-		//
-		// rp, err := repo.Path(k, true, true)
-		// if err != nil {
-		// 	return fmt.Errorf("failed to create repo file for '%x': %v", k, err)
-		// }
-		//
-		// rf, err := os.OpenFile(rp, os.O_CREATE|os.O_EXCL, 0777)
-		// if err != nil {
-		// 	if os.IsExist(err) {
-		// 		return nil //index file already exists
-		// 	}
-		//
-		// 	return fmt.Errorf("failed to write remote file index for '%x': %v", k, err)
-		// }
-		//
-		// return rf.Close()
 	})
 
 	//wait for all concurrent batch transactions to complete
@@ -429,33 +446,6 @@ func (repo *Repository) Push(store *bolt.DB, r io.Reader, remoteName string) (er
 		if err != nil {
 			return fmt.Errorf("failed to read index: %v", err)
 		}
-
-		// //the .r file indicates the remote has this chunk
-		// rp, err := repo.Path(k, true, true)
-		// if err != nil {
-		// 	return fmt.Errorf("failed to create repo file for '%x': %v", k, err)
-		// }
-		//
-		// //attempt to open the rp, if it already exists we can skip this
-		// rf, err := os.OpenFile(rp, os.O_CREATE|os.O_EXCL, 0777)
-		// if err != nil {
-		// 	if os.IsExist(err) {
-		// 		//index file already exists, we can skip push, yeey
-		// 		repo.keyProgressCh <- KeyOp{PushOp, k, true, 0}
-		// 		return nil
-		// 	}
-		//
-		// 	return fmt.Errorf("failed to write remote file for '%x': %v", k, err)
-		// }
-		//
-		// //always close the .r file, but if anything below fails,
-		// //dont consider the chunk to be pushed and remove .r file
-		// defer rf.Close()
-		// defer func() {
-		// 	if ferr != nil {
-		// 		ferr = os.Remove(rp)
-		// 	}
-		// }()
 
 		//open local chunk file
 		p, _ := repo.Path(k, false)
@@ -617,7 +607,7 @@ func (repo *Repository) Pull(ref string, w io.Writer) (err error) {
 			//@see https://git-scm.com/docs/git-ls-tree
 			//line : <mode> SP <type> SP <object> TAB <file>, we use the
 			//tab to be able to clearly seperate the file name as it may contain
-			//field characters
+			//field seperating characters
 			tfields := bytes.SplitN(s.Bytes(), []byte("\t"), 2)
 			fields := bytes.Fields(s.Bytes())
 			if len(fields) < 5 || len(tfields) != 2 || !bytes.Equal(fields[1], []byte("blob")) {
@@ -964,7 +954,7 @@ func (repo *Repository) Split(r io.Reader, w io.Writer) (err error) {
 
 				//if its already written, all good; output key
 				if os.IsExist(err) {
-					repo.keyProgressCh <- KeyOp{StagedOp, k, true, 0}
+					repo.keyProgressCh <- KeyOp{StageOp, k, true, 0}
 					return printk(k)
 				}
 
@@ -992,7 +982,7 @@ func (repo *Repository) Split(r io.Reader, w io.Writer) (err error) {
 			}
 
 			//report staging and output key
-			repo.keyProgressCh <- KeyOp{StagedOp, k, false, int64(n)}
+			repo.keyProgressCh <- KeyOp{StageOp, k, false, int64(n)}
 			return printk(k)
 		}()
 
