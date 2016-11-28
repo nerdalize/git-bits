@@ -793,7 +793,7 @@ func (repo *Repository) Scan(left, right string, w io.Writer) (err error) {
 
 	go func() {
 		defer w3.Close()
-		err = repo.Git(ctx, r2, w3, "cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize) %(rest)")
+		err = repo.Git(ctx, r2, w3, "cat-file", "--batch-check")
 		if err != nil {
 			errCh <- err
 		}
