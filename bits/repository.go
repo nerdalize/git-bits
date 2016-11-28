@@ -689,6 +689,11 @@ func (repo *Repository) Pull(ref string, w io.Writer) (err error) {
 					return err
 				}
 
+				//no tmpfpath means we have no files to move, wer're done here
+				if tmpfpath == "" {
+					return nil
+				}
+
 				err = os.Remove(fpath)
 				if err != nil {
 					return fmt.Errorf("failed to remove original file '%s': %v", fpath, err)
