@@ -31,7 +31,6 @@
 
 ## Getting Started
 
-## Encryption Disclaimers
 
 ## Git-Bits vs other software 
 - git lfs 
