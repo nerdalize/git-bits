@@ -22,7 +22,7 @@
 	go get -u github.com/nerdalize/git-bits
 	``` 
 
-3. Verify that the installation succeeded by envoking the Git with the *git-bits* extension, it should show the _git-bits_ subcommand. If it says "is not a git command", make sure the above steps were executed correctly.
+3. Verify that the installation succeeded by envoking the Git with the *git-bits* extension, it should show the _git-bits_ subcommands. If it complains with "... is not a git command", make sure the above steps were executed correctly.
 
 	```
 	git bits
@@ -30,16 +30,37 @@
 
 
 ## Getting Started
+_git-bits_ is build on top of Git, this guide assumes you have basic knowledge of working with a Git repository. Also, large file chunks are stored directly on AWS S3, as such you'll need a AWS account with an S3 bucket and a `access_key_id` and the `secret_access_key` to allow _git-bits_ to put, get and list bucket objects. The bucket needs to be completely reserved for _git-bits_ file chunks.
 
+   *Note: For Windows, the documentation assumes you're using Git through a bash-like CLI but nothing about the implementation prevents you from using another approach.*
 
-## Git-Bits vs other software 
-- git lfs 
-- git annex 
-- bup 
-- gits3
+  1. Use your terminal to navigate to a repository with some large/binary files you would like to store and initialize _git-bits_:
 
-## Roadmap
-- end-to-end encryption for large file chunks
-- more remote types
-- flexible indexing
-- pre-build releases for MacOS, Windows and Linux
+  ```
+  cd ~/my-project
+  git bits install
+  ```
+  
+  *NOTE: If your git repository doesn't have any commits, a seemingly 'fatal' error appears, you can safely ignore this*
+
+  2. Provide your AWS information when asked and _git-bits_ will configure a pre-push hook and the correct Git filter. 
+
+  3. The 'bits' filter requires you mark certain files for large-file storage using the `.gitattributes` file, the following marks all files ending with .bin for storage using _git-bits_: 
+
+  ```
+  echo '*.bin  filter=bits' >> .gitattributes
+  ```
+
+  4. With the filter inplace you can now add your large file to the staging area and commit changes as usual. Upon moving large-files to the staging area, _git-bits_  will split them into variable sized chunks and write them to `.git/chunks`, the key of each chunk will be listen to inform you of the progress: 
+
+  ```
+  git add ./my-large-file.bin
+  git commit -m "added a large file"
+  ```
+  
+  5. Finally, to store your large files on S3 you can simply push the changes as you're used to. _git-bits_ will index what chunks are already present and only upload new blocks: 
+
+  ```
+  git push
+  ```
+  
