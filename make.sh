@@ -37,7 +37,7 @@ function run_build { #build a development version
 }
 
 function run_release { #cross compile new release builds
-	gox -osarch="linux/amd64 windows/amd64 darwin/amd64" -output=./bin/{{.OS}}_{{.Arch}}/git-bits
+	gox -ldflags "-X main.version=`cat VERSION`" -osarch="linux/amd64 windows/amd64 darwin/amd64" -output=./bin/{{.OS}}_{{.Arch}}/git-bits
 }
 
 case $1 in
@@ -47,9 +47,9 @@ case $1 in
 	"release") run_release ;;
 
 	#
-	# following commands are not portable
-	# and only work on osx with "github-release"
-	# "zip" and "shasum" installed and in PATH
+	# following commands are probably not portable
+	# and have only been tested on macOS with "github-release"
+	# "zip" and "shasum" programs installed and avaiable in PATH
 
  	# 1. zip all binaries
  	"publish-1" )
