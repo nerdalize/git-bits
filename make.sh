@@ -32,14 +32,86 @@ function run_test { #run test suite of itself and its dependencies
 		-var aws_secret_key="${AWS_SECRET_ACCESS_KEY}"
 }
 
-function run_build { #build the toolkit as a single binary
-	go build -o $GOPATH/bin/git-bits
+function run_build { #build a development version
+	go build -o $GOPATH/bin/git-bits -ldflags "-X main.version=`cat VERSION`"
+}
+
+function run_release { #cross compile new release builds
+	gox -osarch="linux/amd64 windows/amd64 darwin/amd64" -output=./bin/{{.OS}}_{{.Arch}}/git-bits
 }
 
 case $1 in
 	"install") run_install ;;
 	"test") run_test ;;
 	"build") run_build ;;
+	"release") run_release ;;
+
+	#
+	# following commands are not portable
+	# and only work on osx with "github-release"
+	# "zip" and "shasum" installed and in PATH
+
+ 	# 1. zip all binaries
+ 	"publish-1" )
+		rm -fr bin/dist
+		mkdir -p bin/dist
+
+		#move the installers
+		for FOLDER in ./bin/*_* ; do \
+			NAME=`basename ${FOLDER}`_`cat VERSION` ; \
+			ARCHIVE=bin/dist/${NAME}.zip ; \
+			pushd ${FOLDER} ; \
+			echo Zipping: ${FOLDER}... `pwd` ; \
+			zip ../dist/${NAME}.zip ./* ; \
+			popd ; \
+		done
+		;;
+
+	# 2. checksum zips
+	"publish-2" )
+		rm bin/dist/*_SHA256SUMS || true
+		cd bin/dist && shasum -a256 * > ./git-bits_`cat ../../VERSION`_SHA256SUMS
+		;;
+
+	# 3. create tag and push it
+	"publish-3" )
+		git tag v`cat VERSION`
+		git push --tags
+		;;
+
+	# 4. draft a new release
+	"publish-4" )
+		github-release release \
+    	--user nerdalize \
+    	--repo git-bits \
+    	--tag v`cat VERSION` \
+    	--pre-release
+ 		;;
+
+ 	# 5. upload files
+	"publish-5" )
+		echo "Uploading zip files..."
+		for FOLDER in ./bin/*_* ; do \
+			NAME=`basename ${FOLDER}`_`cat VERSION` ; \
+			ARCHIVE=bin/dist/${NAME}.zip ; \
+			echo "  $ARCHIVE" ; \
+			github-release upload \
+		    --user nerdalize \
+		    --repo git-bits \
+		    --tag v`cat VERSION` \
+		    --name ${NAME}.zip \
+		    --file ${ARCHIVE} ; \
+		    echo "done!"; \
+		done
+		echo "Uploading shasums..."
+		github-release upload \
+		    --user nerdalize \
+		    --repo git-bits \
+		    --tag v`cat` \
+		    --name git-bits_`cat VERSION`_SHA256SUMS \
+		    --file bin/dist/git-bits_`cat VERSION`_SHA256SUMS
+		echo "done!"
+ 		;;
 
 	*) print_help ;;
 esac
