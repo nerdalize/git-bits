@@ -287,7 +287,7 @@ func (repo *Repository) Install(w io.Writer, conf *Conf) (err error) {
 		}
 	} else {
 		defer f.Close()
-		_, err = f.WriteString(`#/bin/sh
+		_, err = f.WriteString(`#!/bin/sh
 			command -v git-bits >/dev/null 2>&1 || { echo >&2 "This project was setup with git-bits but it can (no longer) be found in your PATH: $PATH."; exit 0; }
 			git-bits scan | git-bits push
 	`)
@@ -624,68 +624,79 @@ func (repo *Repository) Pull(ref string, w io.Writer) (err error) {
 		for s.Scan() {
 			err = func() error {
 				fpath := filepath.Join(repo.rootDir, s.Text())
-				f, err := os.OpenFile(fpath, os.O_RDWR|os.O_CREATE, 0666)
-				if err != nil {
-					return err
-				}
+				tmpfpath := ""
 
-				defer f.Close()
-				hdr := make([]byte, hex.EncodedLen(KeySize))
-				_, err = f.Read(hdr)
-				if err != nil {
-					//if we cant even read a complete header, its not gonna contain chunks
-					return nil
-				}
-
-				offs, err := f.Seek(0, 0)
-				if err != nil || offs != 0 {
-					return fmt.Errorf("failed to seek files: %v", err)
-				}
-
-				if !bytes.Equal(hdr, repo.header[:len(repo.header)-1]) {
-					return nil
-				}
-
-				//We know its a chunks file that needs filling
-				tmpf, err := ioutil.TempFile("", "bits_tmp_")
-				if err != nil {
-					return err
-				}
-
-				fi, err := f.Stat()
-				if err != nil {
-					return fmt.Errorf("failed to stat original file for permissions: %v", err)
-				}
-
-				//mod the tempfile as the original
-				err = tmpf.Chmod(fi.Mode())
-				if err != nil {
-					return fmt.Errorf("failed to modify temp file permissions: %v", err)
-				}
-
-				pr, pw := io.Pipe()
-				go func() {
-					defer pw.Close()
-					err = repo.Fetch(f, pw)
+				err = func() error {
+					f, err := os.OpenFile(fpath, os.O_RDWR|os.O_CREATE, 0666)
 					if err != nil {
-						errCh <- err
+						return err
 					}
+
+					defer f.Close()
+					hdr := make([]byte, hex.EncodedLen(KeySize))
+					_, err = f.Read(hdr)
+					if err != nil {
+						//if we cant even read a complete header, its not gonna contain chunks
+						return nil
+					}
+
+					offs, err := f.Seek(0, 0)
+					if err != nil || offs != 0 {
+						return fmt.Errorf("failed to seek files: %v", err)
+					}
+
+					if !bytes.Equal(hdr, repo.header[:len(repo.header)-1]) {
+						return nil
+					}
+
+					//We know its a chunks file that needs filling
+					tmpf, err := ioutil.TempFile("", "bits_tmp_")
+					if err != nil {
+						return err
+					}
+
+					tmpfpath = tmpf.Name()
+					defer tmpf.Close()
+					fi, err := f.Stat()
+					if err != nil {
+						return fmt.Errorf("failed to stat original file for permissions: %v", err)
+					}
+
+					//mod the tempfile as the original
+					err = os.Chmod(tmpfpath, fi.Mode())
+					if err != nil {
+						return fmt.Errorf("failed to modify temp file permissions: %v", err)
+					}
+
+					pr, pw := io.Pipe()
+					go func() {
+						defer pw.Close()
+						err = repo.Fetch(f, pw)
+						if err != nil {
+							errCh <- err
+						}
+					}()
+
+					err = repo.Combine(pr, tmpf)
+					if err != nil {
+						return fmt.Errorf("failed to combine: %v", err)
+					}
+
+					return nil
 				}()
 
-				defer tmpf.Close()
-				err = repo.Combine(pr, tmpf)
 				if err != nil {
-					return fmt.Errorf("failed to combine: %v", err)
+					return err
 				}
 
 				err = os.Remove(fpath)
 				if err != nil {
-					return fmt.Errorf("failed to remove original chunk: %v", err)
+					return fmt.Errorf("failed to remove original file '%s': %v", fpath, err)
 				}
 
-				err = os.Rename(tmpf.Name(), fpath)
+				err = os.Rename(tmpfpath, fpath)
 				if err != nil {
-					return fmt.Errorf("failed to move '%s' to '%s'", tmpf.Name(), s.Text())
+					return fmt.Errorf("failed to move '%s' to '%s'", tmpfpath, s.Text())
 				}
 
 				fmt.Fprintf(w3, "%s\n", fpath)

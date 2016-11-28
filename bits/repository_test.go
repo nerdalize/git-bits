@@ -285,7 +285,7 @@ func TestPushFetch(t *testing.T) {
 	fsize := int64(5 * 1024 * 1024)
 	fpath := filepath.Join(wd1, fname)
 	f1 := WriteRandomFile(t, fpath, fsize)
-	err = f1.Chmod(0755) //add some non-default permission
+	err = os.Chmod(f1.Name(), 0755)
 	if err != nil {
 		t.Error(err)
 	}
@@ -309,6 +309,7 @@ func TestPushFetch(t *testing.T) {
 	}
 
 	for i := 0; i < 3; i++ {
+
 		func() {
 			f, err := os.OpenFile(fpath, os.O_RDWR, 0666)
 			if err != nil {
@@ -321,17 +322,18 @@ func TestPushFetch(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-
-			err = repo1.Git(ctx, nil, nil, "add", "-A")
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			err = repo1.Git(ctx, nil, nil, "commit", "-m", fmt.Sprintf("c%d", i))
-			if err != nil {
-				t.Fatal(err)
-			}
 		}()
+
+		err = repo1.Git(ctx, nil, nil, "add", "-A")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		err = repo1.Git(ctx, nil, nil, "commit", "-m", fmt.Sprintf("c%d", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+
 	}
 
 	orgContent, err := ioutil.ReadFile(filepath.Join(wd1, fname))
@@ -381,7 +383,7 @@ func TestPushFetch(t *testing.T) {
 	}
 
 	if !bytes.Equal(orgContent, newContent) {
-		t.Error("after clone and init, file content should be equal to content before edit")
+		t.Errorf("after clone and init, file content should be equal to content before edit, original has %d bytes new has %d bytes", len(orgContent), len(newContent))
 	}
 
 	buf := bytes.NewBuffer(nil)
