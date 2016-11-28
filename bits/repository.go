@@ -166,25 +166,9 @@ func NewRepository(dir string, output io.Writer) (repo *Repository, err error) {
 		}
 
 		if kop.Op != IndexOp && indexedTotalKeys > 0 {
-			fmt.Fprintf(repo.output, "indexing of remote chunks ended, total: ~%s+\n", humanize.FormatInteger("#.", indexedTotalKeys))
+			fmt.Fprintf(repo.output, "indexing of remote chunks ended, total: ~%s\n", humanize.FormatInteger("#.", indexedTotalKeys))
 			indexedTotalKeys = 0
 		}
-
-		// //all key files have a size that is the exact multiple of
-		// //33 bytes: 32 bytes hex encoded hashes with a newline character
-		// if objSize%int64(hex.EncodedLen(KeySize)+1) != 0 {
-		// 	continue
-		// }
-		//
-		//
-		// if indexedTotalKeys
-
-		//
-		// if (indexedBucketKeys > 0 && indexedBucketKeys >= indexBucketMax) || (indexedBucketKeys > 0 && kop.Op != IndexOp) {
-		// 	indexedTotalKeys += indexedBucketKeys
-		// 	fmt.Fprintf(repo.output, "Indexed %d remote chunks (total: %d)\n", indexedBucketKeys, indexedTotalKeys)
-		// 	indexedBucketKeys = 0
-		// }
 
 		if kop.Skipped {
 			fmt.Fprintf(repo.output, "%x (skip: already %s)\n", kop.K, strings.Replace(fmt.Sprintf("%sed", string(kop.Op)), "ee", "e", 1))

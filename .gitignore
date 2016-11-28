@@ -26,3 +26,4 @@ _testmain.go
 secrets.env
 *.tfstate
 *.tfstate.backup
+bin
