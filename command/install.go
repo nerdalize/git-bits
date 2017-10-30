@@ -97,7 +97,7 @@ func (cmd *Install) Run(args []string) int {
 		return 128
 	}
 
-	conf.AWSRegion, err = cmd.ui.Ask("What is the AWS region where the bucket is located?\n")
+	conf.AWSDomain, err = cmd.ui.Ask("What is the AWS  where domain the bucket is located? (if left empty, defaults to s3.amazonaws.com)\n")
 	if err != nil {
 		cmd.ui.Error(fmt.Sprintf("failed to get input: %v", err))
 		return 128

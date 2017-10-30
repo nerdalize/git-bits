@@ -15,8 +15,8 @@ type Conf struct {
 	//holds the aws s3 bucket name
 	AWSS3BucketName string `json:"aws_s3_bucket_name"`
 
-	//holds the aws s3 bucket region
-	AWSRegion string `json:"aws_s3_bucket_region"`
+	//holds the aws s3 bucket domain
+	AWSDomain string `json:"aws_s3_bucket_domain"`
 
 	//The aws key that has access to the above bucket
 	AWSAccessKeyID string `json:"aws_access_key_id"`
@@ -65,8 +65,8 @@ func (conf *Conf) OverwriteFromGit(repo *Repository) (err error) {
 			conf.AWSAccessKeyID = fields[1]
 		case "bits.aws-secret-access-key":
 			conf.AWSSecretAccessKey = fields[1]
-		case "bits.aws-s3-bucket-region":
-			conf.AWSRegion = fields[1]
+		case "bits.aws-s3-bucket-domain":
+			conf.AWSDomain = fields[1]
 		}
 	}
 

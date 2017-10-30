@@ -17,13 +17,13 @@ type S3Remote struct {
 	repo      *Repository
 }
 
-func NewS3Remote(repo *Repository, remote, bucket, accessKey, secretKey string, region string) (s3 *S3Remote, err error) {
+func NewS3Remote(repo *Repository, remote, bucket, accessKey, secretKey string, domain string) (s3 *S3Remote, err error) {
 	s3 = &S3Remote{
 		repo:      repo,
 		gitRemote: remote,
 	}
 
-	s3.bucket = s3gof3r.New(region, s3gof3r.Keys{
+	s3.bucket = s3gof3r.New(domain, s3gof3r.Keys{
 		AccessKey: accessKey,
 		SecretKey: secretKey,
 	}).Bucket(bucket)
