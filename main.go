@@ -6,7 +6,7 @@ import (
 
 	"github.com/mitchellh/cli"
 
-	"github.com/nerdalize/git-bits/command"
+	"github.com/jungleai/git-bits/command"
 )
 
 var (
