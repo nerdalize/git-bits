@@ -97,6 +97,12 @@ func (cmd *Install) Run(args []string) int {
 		return 128
 	}
 
+	conf.AWSRegion, err = cmd.ui.Ask("What is the AWS region where the bucket is located?\n")
+	if err != nil {
+		cmd.ui.Error(fmt.Sprintf("failed to get input: %v", err))
+		return 128
+	}
+
 	conf.AWSSecretAccessKey, err = cmd.ui.AskSecret("What is your AWS Secret Key that autorizes the above access key? (input will be hidden)\n")
 	if err != nil {
 		cmd.ui.Error(fmt.Sprintf("failed to get input: %v", err))

@@ -145,6 +145,7 @@ func NewRepository(dir string, output io.Writer) (repo *Repository, err error) {
 			repo.conf.AWSS3BucketName,
 			repo.conf.AWSAccessKeyID,
 			repo.conf.AWSSecretAccessKey,
+			repo.conf.AWSRegion
 		)
 
 		if err != nil {
