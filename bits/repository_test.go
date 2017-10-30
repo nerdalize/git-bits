@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nerdalize/git-bits/bits"
+	"github.com/jungleai/git-bits/bits"
 )
 
 func GitInitRemote(t *testing.T) (dir string) {

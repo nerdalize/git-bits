@@ -145,6 +145,7 @@ func NewRepository(dir string, output io.Writer) (repo *Repository, err error) {
 			repo.conf.AWSS3BucketName,
 			repo.conf.AWSAccessKeyID,
 			repo.conf.AWSSecretAccessKey,
+			repo.conf.AWSDomain,
 		)
 
 		if err != nil {
@@ -239,6 +240,10 @@ func (repo *Repository) Install(w io.Writer, conf *Conf) (err error) {
 			gconf["bits.aws-s3-bucket-name"] = conf.AWSS3BucketName
 		}
 
+		if conf.AWSDomain != "" {
+			gconf["bits.aws-s3-bucket-domain"] = conf.AWSDomain
+		}
+
 		if conf.AWSAccessKeyID != "" {
 			gconf["bits.aws-access-key-id"] = conf.AWSAccessKeyID
 		}
@@ -261,6 +266,7 @@ func (repo *Repository) Install(w io.Writer, conf *Conf) (err error) {
 			repo.conf.AWSS3BucketName,
 			repo.conf.AWSAccessKeyID,
 			repo.conf.AWSSecretAccessKey,
+			repo.conf.AWSDomain,
 		)
 
 		if err != nil {

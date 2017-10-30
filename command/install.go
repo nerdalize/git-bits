@@ -7,7 +7,7 @@ import (
 
 	"github.com/jessevdk/go-flags"
 	"github.com/mitchellh/cli"
-	"github.com/nerdalize/git-bits/bits"
+	"github.com/jungleai/git-bits/bits"
 )
 
 var InstallOpts struct {
@@ -92,6 +92,12 @@ func (cmd *Install) Run(args []string) int {
 	}
 
 	conf.AWSAccessKeyID, err = cmd.ui.Ask("What is your AWS Access Key ID with list, read and write access to the above bucket? \n")
+	if err != nil {
+		cmd.ui.Error(fmt.Sprintf("failed to get input: %v", err))
+		return 128
+	}
+
+	conf.AWSDomain, err = cmd.ui.Ask("What is the AWS  where domain the bucket is located? (if left empty, defaults to s3.amazonaws.com)\n")
 	if err != nil {
 		cmd.ui.Error(fmt.Sprintf("failed to get input: %v", err))
 		return 128
