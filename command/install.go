@@ -7,7 +7,7 @@ import (
 
 	"github.com/jessevdk/go-flags"
 	"github.com/mitchellh/cli"
-	"github.com/nerdalize/git-bits/bits"
+	"github.com/jungleai/git-bits/bits"
 )
 
 var InstallOpts struct {
