@@ -5,7 +5,7 @@ import (
 	"os"
 
 	"github.com/mitchellh/cli"
-	"github.com/nerdalize/git-bits/bits"
+	"github.com/jungleai/git-bits/bits"
 )
 
 type Push struct {

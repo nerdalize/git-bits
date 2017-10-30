@@ -1,4 +1,4 @@
-package: github.com/nerdalize/git-bits
+package: github.com/jungleai/git-bits
 import:
 - package: github.com/mitchellh/cli                 #cross-platform command lines
   version: fa17b36f6c61f1ddbbb08c9f6fde94b3c065a09d

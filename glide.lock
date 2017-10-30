@@ -1,10 +1,10 @@
-hash: 4fb003669fac10230575a0b78141ef639d6013a89171772914882a736b505d55
-updated: 2016-11-25T15:08:32.306532946+01:00
+hash: 17606e0631d26abc5b49fc11e6a547fa764d7e18b4a7efc41a47db8061be8e18
+updated: 2017-10-30T12:13:35.194905297Z
 imports:
 - name: github.com/armon/go-radix
-  version: 4239b77079c7b5d1243b7b4736304ce8ddb6f0f2
+  version: 1fca145dffbcaa8fe914309b1ec0cfc67500fe61
 - name: github.com/bgentry/speakeasy
-  version: 675b82c74c0ed12283ee81ba8a534c8982c07b85
+  version: 4aabc24848ce5fd31929f7d1e4ea74d3709c14cd
 - name: github.com/boltdb/bolt
   version: 0d9f544bb94aac29c185968483459ef74d6deb5d
 - name: github.com/dustin/go-humanize
@@ -12,9 +12,13 @@ imports:
 - name: github.com/jessevdk/go-flags
   version: 8bc97d602c3bfeb5fc6fc9b5a9c898f245495637
 - name: github.com/mattn/go-isatty
-  version: 66b8e73f3f5cda9f96b69efd03dd3d7fc4a5cdb8
+  version: a5cdd64afdee435007ee3e9f6ed4684af949d568
 - name: github.com/mitchellh/cli
   version: fa17b36f6c61f1ddbbb08c9f6fde94b3c065a09d
+- name: github.com/nerdalize/git-bits
+  version: 11f37a9f741b2db273eb925a9ec8e16f52676405
+  subpackages:
+  - bits
 - name: github.com/restic/chunker
   version: bb2ecf9a98e35a0b336ffc23fc515fb6e7961577
 - name: github.com/rlmcpherson/s3gof3r
@@ -22,7 +26,7 @@ imports:
 - name: github.com/VividCortex/ewma
   version: c595cd886c223c6c28fc9ae2727a61b5e4693d85
 - name: golang.org/x/sys
-  version: c200b10b5d5e122be351b67af224adc6128af5bf
+  version: 661970f62f5897bc0cd5fdca7e087ba8a98a8fa1
   subpackages:
   - unix
 testImports: []
